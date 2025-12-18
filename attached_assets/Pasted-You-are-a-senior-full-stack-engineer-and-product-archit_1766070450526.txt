@@ -1,0 +1,235 @@
+You are a senior full-stack engineer and product architect.
+
+Build a production-ready personal finance dashboard web application similar to Empower Personal Dashboard or Rocket Money.
+
+The application must be mobile-friendly and desktop-friendly, secure, and scalable.
+
+Core Objective
+
+Aggregate financial data from multiple accounts and analyze income, expenses, savings, and investments with customizable categorization and long-term historical insights.
+
+Supported Data Ingestion
+
+Implement two ingestion methods:
+
+Bank and account connections using Plaid
+
+SoFi
+
+Capital One
+
+Chase
+
+American Express
+
+Robinhood Credit Card
+
+Any additional institutions supported by Plaid
+
+Manual data upload
+
+CSV upload for bank and credit card statements
+
+User mapping flow for columns
+
+Graceful handling of unsupported formats
+
+Transaction Normalization and Categorization
+
+Normalize all transactions into a unified schema.
+
+Auto-categorize transactions into:
+
+Income
+
+Expenses
+
+Savings
+
+Investments
+
+Provide default expense categories:
+
+Housing
+
+Utilities
+
+Groceries
+
+Dining
+
+Transportation
+
+Travel
+
+Subscriptions
+
+Insurance
+
+Healthcare
+
+Shopping
+
+Entertainment
+
+Fees and interest
+
+Other
+
+User Control and Editing
+
+Users must be able to:
+
+Edit transaction categories
+
+Reassign transactions
+
+Create, rename, or delete categories
+
+Split transactions across multiple categories
+
+Add notes and tags
+
+Mark transactions as recurring or one-time
+
+Apply category changes retroactively if selected
+
+Time Based Analytics
+
+Implement analytics views for:
+
+Current month
+
+Last month
+
+Last 90 days
+
+Last 6 months
+
+Last 12 months
+
+Year to date
+
+Prior year
+
+Year by year history up to 10 years
+
+Each view must calculate:
+
+Total income
+
+Total expenses
+
+Net cash flow
+
+Savings rate
+
+Investment growth
+
+Category breakdowns
+
+Dashboards and Visualizations
+
+Include:
+
+Cash flow trends
+
+Income vs expense charts
+
+Category spending breakdowns
+
+Net worth over time
+
+Investment performance
+
+Anomaly detection for unusual spending
+
+Actionable insights and alerts
+
+UI and UX Requirements
+
+Clean fintech-style UI
+
+Responsive mobile-first design
+
+Fully usable on desktop and mobile
+
+Fast loading and intuitive navigation
+
+Light and dark mode
+
+Key pages:
+
+Overview dashboard
+
+Transactions list with search and filters
+
+Category management
+
+Reports and trends
+
+Account connections
+
+User settings
+
+Security and Privacy
+
+Use Plaid for bank connections
+
+Do not store bank credentials
+
+Encrypt all sensitive data
+
+Secure authentication
+
+Allow users to permanently delete all data
+
+Technical Requirements
+
+Full-stack implementation
+
+Modular and scalable architecture
+
+Real-time or scheduled account syncing
+
+Export reports as CSV or PDF
+
+Designed for future integrations
+
+Required Output
+
+Proceed in structured steps:
+
+Propose the full system architecture
+
+Recommend tech stack suitable for Replit
+
+Design database schema
+
+Build backend APIs
+
+Build frontend UI
+
+Integrate Plaid (use sandbox mode initially)
+
+Implement analytics and charts
+
+Provide setup and run instructions
+
+Build iteratively and explain each step briefly before coding.
+
+Constraints
+
+Prioritize correctness and clarity
+
+Write clean, readable, production-quality code
+
+Avoid unnecessary complexity
+
+Use sensible defaults
+
+Document key decisions
+
+If something is ambiguous, make a reasonable assumption and state it before implementation.
+
+Begin with step 1: system architecture and tech stack.
