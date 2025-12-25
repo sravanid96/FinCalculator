@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { format, subDays, startOfMonth, endOfMonth } from "date-fns";
+import { format, subDays, startOfMonth, endOfMonth, startOfYear, subYears } from "date-fns";
 import { Search, Filter, Download, Plus, Calendar, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -51,6 +51,9 @@ const DATE_FILTERS = [
   { value: "30days", label: "Last 30 Days" },
   { value: "thisMonth", label: "This Month" },
   { value: "lastMonth", label: "Last Month" },
+  { value: "yearToDate", label: "Year to Date" },
+  { value: "1year", label: "Last 1 Year" },
+  { value: "lastYear", label: "Last Year" },
 ];
 
 export default function Transactions() {
@@ -81,19 +84,55 @@ export default function Transactions() {
       case "lastMonth":
         const lastMonth = subDays(startOfMonth(now), 1);
         return { start: startOfMonth(lastMonth), end: endOfMonth(lastMonth) };
+      case "yearToDate":
+        return { start: startOfYear(now), end: now };
+      case "1year":
+        return { start: subDays(now, 365), end: now };
+      case "lastYear":
+        const lastYear = subYears(now, 1);
+        return { start: startOfYear(lastYear), end: new Date(lastYear.getFullYear(), 11, 31) };
       default:
         return null;
     }
   }, [dateFilter]);
 
-  const { data, isLoading } = useQuery<TransactionsResponse>({
+  const { data, isLoading, refetch } = useQuery<TransactionsResponse>({
     queryKey: [
       "/api/transactions",
-      searchQuery,
-      categoryFilter,
+      searchQuery || undefined,
+      categoryFilter === "all" ? undefined : categoryFilter,
       dateRange?.start?.toISOString(),
       dateRange?.end?.toISOString(),
     ],
+    queryFn: async ({ queryKey }) => {
+      const baseUrl = queryKey[0] as string;
+      const params = new URLSearchParams();
+      
+      if (queryKey[1]) params.append("search", queryKey[1] as string);
+      if (queryKey[2]) params.append("categoryId", queryKey[2] as string);
+      if (queryKey[3]) params.append("startDate", queryKey[3] as string);
+      if (queryKey[4]) params.append("endDate", queryKey[4] as string);
+      // Fetch from local database only for now (can be changed to "both" or "cloud")
+      params.append("source", "local");
+      
+      const token = localStorage.getItem("auth_token");
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      
+      const url = `${baseUrl}${params.toString() ? `?${params.toString()}` : ""}`;
+      const res = await fetch(url, {
+        credentials: "include",
+        headers,
+      });
+      
+      if (!res.ok) {
+        throw new Error(`Failed to fetch transactions: ${res.statusText}`);
+      }
+      
+      return res.json();
+    },
   });
 
   const { data: categoriesData } = useQuery<CategoriesResponse>({
@@ -102,26 +141,91 @@ export default function Transactions() {
 
   const updateMutation = useMutation({
     mutationFn: async (data: { id: string; updates: Partial<Transaction> }) => {
-      await apiRequest("PATCH", `/api/transactions/${data.id}`, data.updates);
+      // Add source=local parameter for local-only mode
+      await apiRequest("PATCH", `/api/transactions/${data.id}?source=local`, data.updates);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/analytics"] });
+    onSuccess: async () => {
+      // Invalidate all related queries using predicate to match all variations
+      await queryClient.invalidateQueries({ 
+        predicate: (query) => {
+          const key = query.queryKey[0];
+          return typeof key === "string" && (
+            key === "/api/transactions" ||
+            key.startsWith("/api/transactions/") ||
+            key === "/api/analytics" ||
+            key === "/api/reports" ||
+            key === "/api/accounts/summary" ||
+            key === "/api/accounts" ||
+            key === "/api/transactions/recent"
+          );
+        }
+      });
+      
+      // Force refetch all related queries
+      await queryClient.refetchQueries({ 
+        predicate: (query) => {
+          const key = query.queryKey[0];
+          return typeof key === "string" && (
+            key === "/api/transactions" ||
+            key.startsWith("/api/transactions/") ||
+            key === "/api/analytics" ||
+            key === "/api/reports" ||
+            key === "/api/accounts/summary" ||
+            key === "/api/transactions/recent"
+          );
+        }
+      });
+      
       setEditingTransaction(null);
       toast({ title: "Transaction updated" });
     },
-    onError: () => {
-      toast({ title: "Failed to update transaction", variant: "destructive" });
+    onError: (error: any) => {
+      console.error("Error updating transaction:", error);
+      toast({ 
+        title: "Failed to update transaction", 
+        description: error?.message || "Please try again",
+        variant: "destructive" 
+      });
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      await apiRequest("DELETE", `/api/transactions/${id}`);
+      // Add source=local parameter for local-only mode
+      await apiRequest("DELETE", `/api/transactions/${id}?source=local`);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/analytics"] });
+    onSuccess: async () => {
+      // Invalidate all related queries using predicate to match all variations
+      await queryClient.invalidateQueries({ 
+        predicate: (query) => {
+          const key = query.queryKey[0];
+          return typeof key === "string" && (
+            key === "/api/transactions" ||
+            key.startsWith("/api/transactions/") ||
+            key === "/api/analytics" ||
+            key === "/api/reports" ||
+            key === "/api/accounts/summary" ||
+            key === "/api/accounts" ||
+            key === "/api/transactions/recent"
+          );
+        }
+      });
+      
+      // Force refetch all related queries
+      await queryClient.refetchQueries({ 
+        predicate: (query) => {
+          const key = query.queryKey[0];
+          return typeof key === "string" && (
+            key === "/api/transactions" ||
+            key.startsWith("/api/transactions/") ||
+            key === "/api/analytics" ||
+            key === "/api/reports" ||
+            key === "/api/accounts/summary" ||
+            key === "/api/transactions/recent"
+          );
+        }
+      });
+      
       toast({ title: "Transaction deleted" });
     },
     onError: () => {
@@ -138,6 +242,11 @@ export default function Transactions() {
       isRecurring: transaction.isRecurring || false,
       tags: transaction.tags?.join(", ") || "",
     });
+  };
+
+  const handleCategoryChange = (transaction: Transaction) => {
+    // Open edit dialog with category focused
+    handleEdit(transaction);
   };
 
   const handleSaveEdit = () => {
@@ -286,7 +395,7 @@ export default function Transactions() {
                     category={transaction.category}
                     account={transaction.account}
                     onEdit={handleEdit}
-                    onCategoryChange={handleEdit}
+                    onCategoryChange={handleCategoryChange}
                     onDelete={(t) => deleteMutation.mutate(t.id)}
                   />
                 ))}

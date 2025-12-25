@@ -14,6 +14,8 @@ import {
   Link2,
   AlertCircle,
   CheckCircle2,
+  Download,
+  FileText,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -89,18 +91,43 @@ export default function Accounts() {
   });
 
   const { data, isLoading } = useQuery<AccountsResponse>({
-    queryKey: ["/api/accounts"],
+    queryKey: ["/api/accounts", { source: "local" }],
+    queryFn: async ({ queryKey }) => {
+      const params = new URLSearchParams();
+      if (queryKey[1] && typeof queryKey[1] === 'object' && 'source' in queryKey[1]) {
+        params.append("source", (queryKey[1] as { source: string }).source);
+      }
+      const token = localStorage.getItem("auth_token");
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const res = await fetch(`/api/accounts?${params.toString()}`, {
+        credentials: "include",
+        headers,
+      });
+      if (!res.ok) throw new Error("Failed to fetch accounts");
+      return res.json();
+    },
   });
 
   const createManualMutation = useMutation({
     mutationFn: async (data: typeof manualForm) => {
-      await apiRequest("POST", "/api/accounts/manual", {
-        ...data,
-        currentBalance: parseFloat(data.currentBalance) || 0,
+      const balance = data.currentBalance ? parseFloat(data.currentBalance) : 0;
+      if (isNaN(balance)) {
+        throw new Error("Invalid balance amount");
+      }
+      const response = await apiRequest("POST", "/api/accounts/manual", {
+        institutionName: data.institutionName,
+        accountName: data.accountName,
+        accountType: data.accountType,
+        currentBalance: String(balance),
       });
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/accounts/summary"] });
       setIsManualOpen(false);
       setManualForm({
         institutionName: "",
@@ -110,33 +137,178 @@ export default function Accounts() {
       });
       toast({ title: "Account added successfully" });
     },
-    onError: () => {
-      toast({ title: "Failed to add account", variant: "destructive" });
+    onError: (error: any) => {
+      const errorMessage = error?.message || "Failed to add account";
+      toast({ 
+        title: "Failed to add account", 
+        description: errorMessage,
+        variant: "destructive" 
+      });
     },
   });
 
-  const uploadMutation = useMutation({
+  const [uploadDestination, setUploadDestination] = useState<"cloud" | "local" | "both">("cloud");
+  const [convertedCsv, setConvertedCsv] = useState<string | null>(null);
+  const [convertedFileName, setConvertedFileName] = useState<string | null>(null);
+  const [isConverting, setIsConverting] = useState(false);
+
+  const convertPdfMutation = useMutation({
     mutationFn: async (file: File) => {
       const formData = new FormData();
       formData.append("file", file);
-      const response = await fetch("/api/transactions/upload", {
+      const token = localStorage.getItem("auth_token");
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch("/api/transactions/convert-pdf", {
         method: "POST",
+        headers,
         body: formData,
         credentials: "include",
       });
       if (!response.ok) {
-        throw new Error("Upload failed");
+        const error = await response.json().catch(() => ({ message: "Conversion failed" }));
+        throw new Error(error.message || "Conversion failed");
+      }
+      const csvContent = await response.text();
+      const contentDisposition = response.headers.get("Content-Disposition");
+      let fileName = file.name.replace(/\.pdf$/i, '') + "_converted.csv";
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="?([^"]+)"?/);
+        if (match) {
+          fileName = match[1];
+        }
+      }
+      return { csvContent, fileName };
+    },
+    onSuccess: (result) => {
+      setConvertedCsv(result.csvContent);
+      setConvertedFileName(result.fileName);
+      toast({
+        title: "PDF converted successfully",
+        description: "You can now download the CSV or use it for import.",
+      });
+    },
+    onError: (error: any) => {
+      toast({ 
+        title: "Failed to convert PDF", 
+        description: error.message,
+        variant: "destructive" 
+      });
+    },
+  });
+
+  const handleConvertPdf = () => {
+    if (csvFile && (csvFile.type === "application/pdf" || csvFile.name.endsWith(".pdf"))) {
+      setIsConverting(true);
+      convertPdfMutation.mutate(csvFile, {
+        onSettled: () => setIsConverting(false),
+      });
+    } else {
+      toast({
+        title: "Invalid file",
+        description: "Please select a PDF file to convert.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDownloadCsv = () => {
+    if (convertedCsv && convertedFileName) {
+      const blob = new Blob([convertedCsv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = convertedFileName;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({
+        title: "CSV downloaded",
+        description: `Saved as ${convertedFileName}`,
+      });
+    }
+  };
+
+  const uploadMutation = useMutation({
+    mutationFn: async (data: { file: File; destination: "cloud" | "local" | "both"; useConvertedCsv?: boolean }) => {
+      const formData = new FormData();
+      
+      // If we have a converted CSV and user wants to use it, create a File from it
+      if (data.useConvertedCsv && convertedCsv && convertedFileName) {
+        const csvBlob = new Blob([convertedCsv], { type: "text/csv" });
+        const csvFile = new File([csvBlob], convertedFileName, { type: "text/csv" });
+        formData.append("file", csvFile);
+      } else {
+        formData.append("file", data.file);
+      }
+      
+      formData.append("destination", data.destination);
+      const token = localStorage.getItem("auth_token");
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch("/api/transactions/upload", {
+        method: "POST",
+        headers,
+        body: formData,
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ message: "Upload failed" }));
+        throw new Error(error.message || "Upload failed");
       }
       return response.json();
     },
-    onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/accounts"] });
+    onSuccess: async (result) => {
+      // Invalidate all transaction-related queries
+      await queryClient.invalidateQueries({ 
+        predicate: (query) => {
+          const key = query.queryKey[0];
+          return typeof key === "string" && (
+            key === "/api/transactions" ||
+            key.startsWith("/api/transactions/") ||
+            key.startsWith("/api/analytics") ||
+            key === "/api/accounts/summary"
+          );
+        }
+      });
+      
+      // Force refetch all transaction queries
+      await queryClient.refetchQueries({ 
+        predicate: (query) => {
+          const key = query.queryKey[0];
+          return typeof key === "string" && (
+            key === "/api/transactions" ||
+            key.startsWith("/api/transactions/") ||
+            key.startsWith("/api/analytics")
+          );
+        }
+      });
+      
+      // Invalidate and refetch accounts
+      await queryClient.invalidateQueries({ queryKey: ["/api/accounts"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/accounts/summary"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/accounts"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/accounts/summary"] });
+      
       setIsUploadOpen(false);
       setCsvFile(null);
+      setUploadDestination("cloud"); // Reset to default
+      
+      let description = "";
+      if (result.destination === "cloud") {
+        description = `${result.cloudImported} transactions imported to cloud database.`;
+      } else if (result.destination === "local") {
+        description = `${result.localImported} transactions imported to local database.`;
+      } else {
+        description = `${result.cloudImported} to cloud, ${result.localImported} to local database.`;
+      }
+      
       toast({
         title: "Transactions imported",
-        description: `${result.imported} transactions imported successfully.`,
+        description,
       });
     },
     onError: () => {
@@ -160,10 +332,24 @@ export default function Accounts() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      await apiRequest("DELETE", `/api/accounts/${id}`);
+      // Add source=local parameter for local-only mode
+      await apiRequest("DELETE", `/api/accounts/${id}?source=local`);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/accounts"] });
+    onSuccess: async () => {
+      // Invalidate and refetch all related queries
+      await queryClient.invalidateQueries({ queryKey: ["/api/accounts"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/accounts/summary"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/analytics"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
+      
+      // Force refetch
+      await queryClient.refetchQueries({ queryKey: ["/api/accounts"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/accounts/summary"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/transactions"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/analytics"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/reports"] });
+      
       setDeletingAccount(null);
       toast({ title: "Account removed" });
     },
@@ -172,12 +358,106 @@ export default function Accounts() {
     },
   });
 
-  const handleConnectPlaid = useCallback(() => {
-    toast({
-      title: "Plaid Integration",
-      description:
-        "To connect bank accounts, you'll need to set up Plaid API keys. Check the settings page for more information.",
-    });
+  const handleConnectPlaid = useCallback(async () => {
+    try {
+      // Load Plaid Link script if not already loaded
+      if (!(window as any).Plaid) {
+        const script = document.createElement("script");
+        script.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
+        script.async = true;
+        document.head.appendChild(script);
+        
+        await new Promise((resolve, reject) => {
+          script.onload = resolve;
+          script.onerror = reject;
+          setTimeout(reject, 10000); // 10 second timeout
+        });
+      }
+
+      // Get link token from backend
+      const token = localStorage.getItem("auth_token");
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      const linkTokenRes = await fetch("/api/plaid/link-token", {
+        method: "POST",
+        headers,
+        credentials: "include",
+      });
+
+      if (!linkTokenRes.ok) {
+        const error = await linkTokenRes.json().catch(() => ({ message: "Failed to get link token" }));
+        throw new Error(error.message || "Failed to get link token");
+      }
+
+      const { link_token } = await linkTokenRes.json();
+
+      // Initialize Plaid Link
+      const handler = (window as any).Plaid.create({
+        token: link_token,
+        onSuccess: async (publicToken: string, metadata: any) => {
+          try {
+            // Exchange public token for access token
+            const exchangeRes = await fetch("/api/plaid/exchange-token", {
+              method: "POST",
+              headers: {
+                ...headers,
+                "Content-Type": "application/json",
+              },
+              credentials: "include",
+              body: JSON.stringify({ public_token: publicToken }),
+            });
+
+            if (!exchangeRes.ok) {
+              const error = await exchangeRes.json().catch(() => ({ message: "Failed to connect account" }));
+              throw new Error(error.message || "Failed to connect account");
+            }
+
+            const result = await exchangeRes.json();
+
+            // Invalidate queries to refresh account list
+            queryClient.invalidateQueries({ queryKey: ["/api/accounts"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/accounts/summary"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/analytics"] });
+
+            toast({
+              title: "Account connected",
+              description: result.message || `Successfully connected ${result.accounts?.length || 0} account(s)`,
+            });
+          } catch (error: any) {
+            toast({
+              title: "Failed to connect account",
+              description: error.message || "An error occurred",
+              variant: "destructive",
+            });
+          }
+        },
+        onExit: (err: any, metadata: any) => {
+          if (err) {
+            toast({
+              title: "Connection cancelled",
+              description: err.display_message || "The connection was cancelled",
+              variant: "destructive",
+            });
+          }
+        },
+        onEvent: (eventName: string, metadata: any) => {
+          // Optional: handle events for analytics
+          console.log("Plaid event:", eventName, metadata);
+        },
+      });
+
+      handler.open();
+    } catch (error: any) {
+      toast({
+        title: "Failed to connect account",
+        description: error.message || "Plaid is not configured. Please set up Plaid API credentials.",
+        variant: "destructive",
+      });
+    }
   }, [toast]);
 
   const totalBalance = data?.accounts.reduce(
@@ -295,26 +575,119 @@ export default function Accounts() {
             <DialogTrigger asChild>
               <Button variant="outline" className="gap-2" data-testid="button-upload-csv">
                 <Upload className="h-4 w-4" />
-                Upload CSV
+                Upload CSV/PDF
               </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Upload Transactions</DialogTitle>
                 <DialogDescription>
-                  Import transactions from a CSV file exported from your bank.
+                  Import transactions from a CSV file or PDF statement exported from your bank.
                 </DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="csvFile">CSV File</Label>
+                  <Label htmlFor="csvFile">CSV or PDF File</Label>
                   <Input
                     id="csvFile"
                     type="file"
-                    accept=".csv"
-                    onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
+                    accept=".csv,.pdf"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] || null;
+                      setCsvFile(file);
+                      // Reset converted CSV when file changes
+                      if (file) {
+                        setConvertedCsv(null);
+                        setConvertedFileName(null);
+                      }
+                    }}
                     data-testid="input-csv-file"
                   />
+                  {csvFile && (csvFile.type === "application/pdf" || csvFile.name.endsWith(".pdf")) && (
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleConvertPdf}
+                        disabled={isConverting || convertPdfMutation.isPending}
+                        className="flex-1 gap-2"
+                      >
+                        <FileText className="h-4 w-4" />
+                        {isConverting || convertPdfMutation.isPending ? "Converting..." : "Convert PDF to CSV"}
+                      </Button>
+                      {convertedCsv && convertedFileName && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={handleDownloadCsv}
+                          className="gap-2"
+                        >
+                          <Download className="h-4 w-4" />
+                          Download CSV
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                  {convertedCsv && (
+                    <div className="rounded-lg bg-green-50 dark:bg-green-950 p-3 border border-green-200 dark:border-green-800">
+                      <p className="text-sm text-green-800 dark:text-green-200">
+                        ✓ PDF converted successfully! You can download the CSV or proceed with import.
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <div className="grid gap-3">
+                  <Label>Upload Destination</Label>
+                  <div className="space-y-2">
+                    <label className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="uploadDestination"
+                        value="cloud"
+                        checked={uploadDestination === "cloud"}
+                        onChange={(e) => setUploadDestination(e.target.value as "cloud" | "local" | "both")}
+                        className="h-4 w-4"
+                      />
+                      <div className="flex-1">
+                        <span className="text-sm font-medium">Cloud Database Only</span>
+                        <p className="text-xs text-muted-foreground">
+                          Save to your cloud PostgreSQL database (Neon, Supabase, etc.)
+                        </p>
+                      </div>
+                    </label>
+                    <label className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="uploadDestination"
+                        value="local"
+                        checked={uploadDestination === "local"}
+                        onChange={(e) => setUploadDestination(e.target.value as "cloud" | "local" | "both")}
+                        className="h-4 w-4"
+                      />
+                      <div className="flex-1">
+                        <span className="text-sm font-medium">Local Database Only</span>
+                        <p className="text-xs text-muted-foreground">
+                          Save to your local PostgreSQL database (requires LOCAL_DATABASE_URL)
+                        </p>
+                      </div>
+                    </label>
+                    <label className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="uploadDestination"
+                        value="both"
+                        checked={uploadDestination === "both"}
+                        onChange={(e) => setUploadDestination(e.target.value as "cloud" | "local" | "both")}
+                        className="h-4 w-4"
+                      />
+                      <div className="flex-1">
+                        <span className="text-sm font-medium">Both Databases</span>
+                        <p className="text-xs text-muted-foreground">
+                          Save to both cloud and local PostgreSQL databases
+                        </p>
+                      </div>
+                    </label>
+                  </div>
                 </div>
                 <div className="rounded-lg bg-muted p-4">
                   <p className="text-sm text-muted-foreground">
@@ -328,7 +701,17 @@ export default function Accounts() {
                   Cancel
                 </Button>
                 <Button
-                  onClick={() => csvFile && uploadMutation.mutate(csvFile)}
+                  onClick={() => {
+                    if (csvFile) {
+                      // If we have a converted CSV from PDF, use it; otherwise use original file
+                      const useConverted = convertedCsv && (csvFile.type === "application/pdf" || csvFile.name.endsWith(".pdf"));
+                      uploadMutation.mutate({ 
+                        file: csvFile, 
+                        destination: uploadDestination,
+                        useConvertedCsv: useConverted || false,
+                      });
+                    }
+                  }}
                   disabled={!csvFile || uploadMutation.isPending}
                   data-testid="button-import"
                 >

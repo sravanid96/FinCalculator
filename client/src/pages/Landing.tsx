@@ -60,7 +60,7 @@ export default function Landing() {
           </div>
           <div className="flex items-center gap-3">
             <ThemeToggle />
-            <a href="/api/login">
+            <a href="/login">
               <Button data-testid="button-login">Log In</Button>
             </a>
           </div>
@@ -81,7 +81,7 @@ export default function Landing() {
                 and gain powerful insights to make smarter money decisions.
               </p>
               <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
-                <a href="/api/login">
+                <a href="/login">
                   <Button size="lg" className="gap-2" data-testid="button-get-started">
                     Get Started Free
                     <ArrowRight className="h-4 w-4" />
@@ -212,7 +212,7 @@ export default function Landing() {
               Join thousands of users who have taken control of their finances.
               It only takes a few minutes to get started.
             </p>
-            <a href="/api/login">
+            <a href="/login">
               <Button size="lg" className="gap-2" data-testid="button-cta-signup">
                 Create Free Account
                 <ArrowRight className="h-4 w-4" />

@@ -1,6 +1,23 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, Tag } from "lucide-react";
+import { Plus, Pencil, Trash2, Tag, GripVertical } from "lucide-react";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragOverlay,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,6 +52,7 @@ import { CategoryBadge } from "@/components/CategoryBadge";
 import { EmptyState } from "@/components/EmptyState";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { SortableCategoryItem } from "@/components/SortableCategoryItem";
 import type { Category } from "@shared/schema";
 
 interface CategoriesResponse {
@@ -96,7 +114,7 @@ export default function Categories() {
   const updateMutation = useMutation({
     mutationFn: async (data: {
       id: string;
-      updates: { name: string; type: string; color: string };
+      updates: { name?: string; type?: string; color?: string };
     }) => {
       await apiRequest("PATCH", `/api/categories/${data.id}`, data.updates);
     },
@@ -108,6 +126,19 @@ export default function Categories() {
     },
     onError: () => {
       toast({ title: "Failed to update category", variant: "destructive" });
+    },
+  });
+
+  const updateTypeMutation = useMutation({
+    mutationFn: async (data: { id: string; type: string }) => {
+      await apiRequest("PATCH", `/api/categories/${data.id}`, { type: data.type });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/categories"] });
+      toast({ title: "Category moved" });
+    },
+    onError: () => {
+      toast({ title: "Failed to move category", variant: "destructive" });
     },
   });
 
@@ -163,6 +194,68 @@ export default function Categories() {
     {} as Record<string, Category[]>
   );
 
+  const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFormData((prev) => ({ ...prev, name: e.target.value }));
+  };
+
+  const handleTypeChange = (value: string) => {
+    setFormData((prev) => ({ ...prev, type: value }));
+  };
+
+  const handleColorChange = (color: string) => {
+    setFormData((prev) => ({ ...prev, color }));
+  };
+
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [draggedCategory, setDraggedCategory] = useState<Category | null>(null);
+
+  const handleDragStart = (event: any) => {
+    const { active } = event;
+    setActiveId(active.id);
+    const category = data?.categories.find((c) => c.id === active.id);
+    setDraggedCategory(category || null);
+  };
+
+  const handleDragEnd = (event: any) => {
+    const { active, over } = event;
+    setActiveId(null);
+    setDraggedCategory(null);
+
+    if (!over) {
+      return;
+    }
+
+    // Check if dropped on a category type container (card)
+    const targetType = CATEGORY_TYPES.find((type) => {
+      // Check if dropped directly on the card container
+      if (over.id === type.value) {
+        return true;
+      }
+      // Check if dropped on a category in that type's list
+      const categories = groupedCategories?.[type.value] || [];
+      return categories.some((c) => c.id === over.id);
+    });
+
+    if (!targetType) {
+      return;
+    }
+
+    const category = data?.categories.find((c) => c.id === active.id);
+    if (category && category.type !== targetType.value) {
+      updateTypeMutation.mutate({
+        id: category.id,
+        type: targetType.value,
+      });
+    }
+  };
+
   const CategoryForm = () => (
     <div className="grid gap-4 py-4">
       <div className="grid gap-2">
@@ -170,16 +263,17 @@ export default function Categories() {
         <Input
           id="name"
           value={formData.name}
-          onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+          onChange={handleNameChange}
           placeholder="Category name"
           data-testid="input-category-name"
+          autoFocus
         />
       </div>
       <div className="grid gap-2">
         <Label htmlFor="type">Type</Label>
         <Select
           value={formData.type}
-          onValueChange={(value) => setFormData({ ...formData, type: value })}
+          onValueChange={handleTypeChange}
         >
           <SelectTrigger data-testid="select-category-type">
             <SelectValue />
@@ -200,7 +294,7 @@ export default function Categories() {
             <button
               key={color}
               type="button"
-              onClick={() => setFormData({ ...formData, color })}
+              onClick={() => handleColorChange(color)}
               className={`h-8 w-8 rounded-full transition-transform ${
                 formData.color === color
                   ? "ring-2 ring-offset-2 ring-primary scale-110"
@@ -224,7 +318,15 @@ export default function Categories() {
             Manage how your transactions are organized
           </p>
         </div>
-        <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
+        <Dialog 
+          open={isCreateOpen} 
+          onOpenChange={(open) => {
+            setIsCreateOpen(open);
+            if (!open) {
+              resetForm();
+            }
+          }}
+        >
           <DialogTrigger asChild>
             <Button className="gap-2" data-testid="button-create-category">
               <Plus className="h-4 w-4" />
@@ -240,7 +342,13 @@ export default function Categories() {
             </DialogHeader>
             <CategoryForm />
             <DialogFooter>
-              <Button variant="outline" onClick={() => setIsCreateOpen(false)}>
+              <Button 
+                variant="outline" 
+                onClick={() => {
+                  setIsCreateOpen(false);
+                  resetForm();
+                }}
+              >
                 Cancel
               </Button>
               <Button
@@ -276,56 +384,61 @@ export default function Categories() {
           ))}
         </div>
       ) : data?.categories && data.categories.length > 0 ? (
-        <div className="grid gap-6 md:grid-cols-2">
-          {CATEGORY_TYPES.map((type) => {
-            const categories = groupedCategories?.[type.value] || [];
-            return (
-              <Card key={type.value}>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg">{type.label}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {categories.length > 0 ? (
-                    <div className="space-y-2">
-                      {categories.map((category) => (
-                        <div
-                          key={category.id}
-                          className="group flex items-center justify-between rounded-lg p-2 hover-elevate"
-                        >
-                          <CategoryBadge category={category} />
-                          {!category.isSystem && (
-                            <div className="invisible flex gap-1 group-hover:visible">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => handleEdit(category)}
-                                data-testid={`button-edit-${category.id}`}
-                              >
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => setDeletingCategory(category)}
-                                data-testid={`button-delete-${category.id}`}
-                              >
-                                <Trash2 className="h-4 w-4 text-destructive" />
-                              </Button>
-                            </div>
-                          )}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+        >
+          <div className="grid gap-6 md:grid-cols-2">
+            {CATEGORY_TYPES.map((type) => {
+              const categories = groupedCategories?.[type.value] || [];
+              return (
+                <Card key={type.value} id={type.value} className="min-h-[200px]">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg">{type.label}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {categories.length > 0 ? (
+                      <SortableContext
+                        items={categories.map((c) => c.id)}
+                        strategy={verticalListSortingStrategy}
+                        id={type.value}
+                      >
+                        <div className="space-y-2">
+                          {categories.map((category) => (
+                            <SortableCategoryItem
+                              key={category.id}
+                              category={category}
+                              onEdit={handleEdit}
+                              onDelete={setDeletingCategory}
+                            />
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">
-                      No {type.label.toLowerCase()} categories yet
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+                      </SortableContext>
+                    ) : (
+                      <div
+                        className="flex items-center justify-center min-h-[100px] border-2 border-dashed rounded-lg border-muted"
+                        id={type.value}
+                      >
+                        <p className="text-sm text-muted-foreground">
+                          Drop categories here
+                        </p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+          <DragOverlay>
+            {draggedCategory ? (
+              <div className="rounded-lg p-2 bg-background border shadow-lg">
+                <CategoryBadge category={draggedCategory} />
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
       ) : (
         <EmptyState
           icon={Tag}

@@ -85,15 +85,69 @@ export default function Dashboard() {
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("current_month");
 
   const { data: analytics, isLoading: analyticsLoading } = useQuery<AnalyticsData>({
-    queryKey: ["/api/analytics", timePeriod],
+    queryKey: ["/api/analytics", { period: timePeriod, source: "local" }],
+    queryFn: async ({ queryKey }) => {
+      const params = new URLSearchParams();
+      if (queryKey[1] && typeof queryKey[1] === 'object' && 'period' in queryKey[1]) {
+        params.append("period", (queryKey[1] as { period: string }).period);
+      }
+      if (queryKey[1] && typeof queryKey[1] === 'object' && 'source' in queryKey[1]) {
+        params.append("source", (queryKey[1] as { source: string }).source);
+      }
+      const token = localStorage.getItem("auth_token");
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const res = await fetch(`/api/analytics?${params.toString()}`, {
+        credentials: "include",
+        headers,
+      });
+      if (!res.ok) throw new Error("Failed to fetch analytics");
+      return res.json();
+    },
   });
 
   const { data: recentData, isLoading: transactionsLoading } = useQuery<RecentTransactionsData>({
-    queryKey: ["/api/transactions/recent"],
+    queryKey: ["/api/transactions/recent", { source: "local" }],
+    queryFn: async ({ queryKey }) => {
+      const params = new URLSearchParams();
+      if (queryKey[1] && typeof queryKey[1] === 'object' && 'source' in queryKey[1]) {
+        params.append("source", (queryKey[1] as { source: string }).source);
+      }
+      const token = localStorage.getItem("auth_token");
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const res = await fetch(`/api/transactions/recent?${params.toString()}`, {
+        credentials: "include",
+        headers,
+      });
+      if (!res.ok) throw new Error("Failed to fetch recent transactions");
+      return res.json();
+    },
   });
 
   const { data: accountsData } = useQuery<{ totalBalance: number; accountCount: number }>({
-    queryKey: ["/api/accounts/summary"],
+    queryKey: ["/api/accounts/summary", { source: "local" }],
+    queryFn: async ({ queryKey }) => {
+      const params = new URLSearchParams();
+      if (queryKey[1] && typeof queryKey[1] === 'object' && 'source' in queryKey[1]) {
+        params.append("source", (queryKey[1] as { source: string }).source);
+      }
+      const token = localStorage.getItem("auth_token");
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const res = await fetch(`/api/accounts/summary?${params.toString()}`, {
+        credentials: "include",
+        headers,
+      });
+      if (!res.ok) throw new Error("Failed to fetch account summary");
+      return res.json();
+    },
   });
 
   return (

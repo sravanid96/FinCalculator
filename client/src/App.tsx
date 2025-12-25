@@ -9,6 +9,7 @@ import { SidebarProvider, SidebarTrigger, SidebarInset } from "@/components/ui/s
 import { AppSidebar } from "@/components/AppSidebar";
 import { useAuth } from "@/hooks/useAuth";
 import Landing from "@/pages/Landing";
+import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 import Transactions from "@/pages/Transactions";
 import Categories from "@/pages/Categories";
@@ -58,7 +59,7 @@ function AuthenticatedRouter() {
 }
 
 function Router() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, user } = useAuth();
 
   if (isLoading) {
     return (
@@ -71,11 +72,23 @@ function Router() {
     );
   }
 
-  if (!isAuthenticated) {
-    return <Landing />;
+  // Check if we have a token but user is not loaded yet
+  const hasToken = typeof window !== "undefined" && localStorage.getItem("auth_token");
+  if (hasToken && !user && !isLoading) {
+    // Token exists but user query failed - might be invalid token
+    localStorage.removeItem("auth_token");
   }
 
-  return <AuthenticatedRouter />;
+  return (
+    <Switch>
+      <Route path="/login" component={Login} />
+      {isAuthenticated ? (
+        <AuthenticatedRouter />
+      ) : (
+        <Route component={Landing} />
+      )}
+    </Switch>
+  );
 }
 
 function App() {

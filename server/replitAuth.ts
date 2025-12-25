@@ -6,6 +6,7 @@ import session from "express-session";
 import type { Express, RequestHandler } from "express";
 import memoize from "memoizee";
 import connectPg from "connect-pg-simple";
+import jwt from "jsonwebtoken";
 import { storage } from "./storage";
 
 const getOidcConfig = memoize(
@@ -61,6 +62,16 @@ async function upsertUser(claims: any) {
 }
 
 export async function setupAuth(app: Express) {
+  // Skip auth setup if REPL_ID is not set (local development)
+  if (!process.env.REPL_ID) {
+    console.warn("⚠️  REPL_ID not set. Skipping Replit auth setup. Running without authentication.");
+    app.set("trust proxy", 1);
+    app.use(getSession());
+    app.use(passport.initialize());
+    app.use(passport.session());
+    return;
+  }
+
   app.set("trust proxy", 1);
   app.use(getSession());
   app.use(passport.initialize());
@@ -129,6 +140,40 @@ export async function setupAuth(app: Express) {
 }
 
 export const isAuthenticated: RequestHandler = async (req, res, next) => {
+  // Check for JWT token first
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : null;
+
+  if (token) {
+    try {
+      const JWT_SECRET = process.env.JWT_SECRET || process.env.SESSION_SECRET || "your-secret-key-change-in-production";
+      const decoded = jwt.verify(token, JWT_SECRET) as any;
+      (req as any).user = { id: decoded.id, email: decoded.email, claims: { sub: decoded.id } };
+      console.log("✅ JWT authenticated user:", decoded.id);
+      return next();
+    } catch (error) {
+      // Token invalid, continue to other checks
+      console.error("❌ JWT verification failed:", error);
+      // Don't fall through to mock user if token exists but is invalid
+      return res.status(401).json({ message: "Invalid or expired token" });
+    }
+  }
+
+  // Check session-based auth (for Replit auth)
+  if ((req as any).isAuthenticated && (req as any).isAuthenticated()) {
+    return next();
+  }
+
+  // Only use mock user if no auth at all and in development
+  if (!process.env.REPL_ID && !token) {
+    console.warn("⚠️  No authentication - using mock user (development only)");
+    (req as any).user = { claims: { sub: "local-dev-user" }, id: "local-dev-user" };
+    return next();
+  }
+
+  // No valid authentication
+  return res.status(401).json({ message: "Unauthorized" });
+
   const user = req.user as any;
 
   if (!req.isAuthenticated() || !user.expires_at) {

@@ -75,7 +75,27 @@ export default function Reports() {
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("last_6_months");
 
   const { data, isLoading } = useQuery<ReportData>({
-    queryKey: ["/api/reports", timePeriod],
+    queryKey: ["/api/reports", { period: timePeriod, source: "local" }],
+    queryFn: async ({ queryKey }) => {
+      const params = new URLSearchParams();
+      if (queryKey[1] && typeof queryKey[1] === 'object' && 'period' in queryKey[1]) {
+        params.append("period", (queryKey[1] as { period: string }).period);
+      }
+      if (queryKey[1] && typeof queryKey[1] === 'object' && 'source' in queryKey[1]) {
+        params.append("source", (queryKey[1] as { source: string }).source);
+      }
+      const token = localStorage.getItem("auth_token");
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const res = await fetch(`/api/reports?${params.toString()}`, {
+        credentials: "include",
+        headers,
+      });
+      if (!res.ok) throw new Error("Failed to fetch reports");
+      return res.json();
+    },
   });
 
   const handleExport = () => {

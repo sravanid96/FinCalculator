@@ -90,6 +90,11 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.email, email));
+    return user;
+  }
+
   async upsertUser(userData: UpsertUser): Promise<User> {
     const [user] = await db
       .insert(users)
@@ -333,7 +338,8 @@ export class DatabaseStorage implements IStorage {
         monthlyData[monthKey] = { income: 0, expenses: 0 };
       }
 
-      if (tx.isIncome || amount > 0) {
+      // Amounts are stored as absolute values, so we rely on isIncome flag
+      if (tx.isIncome) {
         totalIncome += Math.abs(amount);
         monthlyData[monthKey].income += Math.abs(amount);
       } else {
