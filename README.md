@@ -3,17 +3,23 @@
 
 A comprehensive personal finance management application that helps you aggregate all your financial accounts, track spending patterns, and gain powerful insights to make smarter money decisions.
 
-![Finance Dashboard Landing Page](<img width="1476" height="1044" alt="Screenshot 2026-01-04 at 8 14 19 PM" src="https://github.com/user-attachments/assets/c293236f-e32f-41f2-9edf-7953bad35947" />)
+### Finance Dashboard Landing Page
+
+<img width="1476" height="1044" alt="Screenshot 2026-01-04 at 8 14 19 PM" src="https://github.com/user-attachments/assets/8411593b-a7e7-4f11-b350-b916c85bb778" />
+<img width="1358" height="957" alt="Screenshot 2026-01-04 at 8 21 24 PM" src="https://github.com/user-attachments/assets/180bced0-13e6-41b9-9418-2329b4003023" />
 
 ## 🚀 Features
+<img width="1728" height="880" alt="Screenshot 2026-01-04 at 8 22 21 PM" src="https://github.com/user-attachments/assets/49076dc4-b109-4dbd-90e8-8cecde6f988c" />
 
 ### Core Functionality
 - **Smart Analytics**: Powerful insights into your spending patterns with customizable time periods and category breakdowns
 - **Bank-Level Security**: Connect your accounts securely through Plaid. We never store your bank credentials
 - **Auto-Categorization**: Transactions are automatically categorized with the ability to customize and create your own categories
 - **Mobile Friendly**: Access your financial dashboard anywhere with a fully responsive design that works on any device
-
-### Key Capabilities
+<img width="1461" height="800" alt="Screenshot 2026-01-04 at 8 23 10 PM" src="https://github.com/user-attachments/assets/2d1f897c-e0e9-4f3d-bcfc-07bde1c95832" />
+<img width="1656" height="860" alt="Screenshot 2026-01-04 at 8 23 34 PM" src="https://github.com/user-attachments/assets/e6102d6e-361f-4fcb-b1a5-85c210c3059f" />
+### Key 
+Capabilities
 - ✅ Connect multiple bank accounts via Plaid integration
 - ✅ Manual account creation and transaction entry
 - ✅ CSV transaction import with auto-categorization
@@ -29,7 +35,10 @@ A comprehensive personal finance management application that helps you aggregate
 - ✅ Dark/Light mode support
 - ✅ Dual database support (Cloud PostgreSQL + Local PostgreSQL)
 
+<img width="1706" height="799" alt="Screenshot 2026-01-04 at 8 24 41 PM" src="https://github.com/user-attachments/assets/29b9e787-118c-403b-b977-8036e5b625c9" />
+
 ## 🛠️ Tech Stack
+
 
 ### Frontend
 - **React 18** with TypeScript
