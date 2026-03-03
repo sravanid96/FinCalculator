@@ -13,6 +13,8 @@ import { subDays, startOfMonth, endOfMonth, startOfYear, subMonths, subYears } f
 import multer from "multer";
 import { parse } from "csv-parse/sync";
 import { eq } from "drizzle-orm";
+import optionsRoutes from "./optionsRoutes";
+import healthRoutes from "./healthRoutes";
 // pdf-parse will be loaded dynamically
 
 const upload = multer({ 
@@ -69,6 +71,12 @@ function getDateRange(period: string): { start: Date; end: Date } {
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   await setupAuth(app);
+
+  // Register options trading routes (public, no auth required for market data)
+  app.use("/api/options", optionsRoutes);
+
+  // Register health routes (auth required, local DB only)
+  app.use("/api/health", healthRoutes);
 
   // Import new auth functions
   const { register, login, setupGoogleAuth, setupGoogleRoutes, verifyToken } = await import("./auth");
@@ -539,10 +547,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Fetch from cloud database if source is "cloud" or "both"
       if (dataSource === "cloud" || dataSource === "both") {
         const cloudResult = await storage.getTransactions(userId, {
-          startDate: startDate ? new Date(startDate as string) : undefined,
-          endDate: endDate ? new Date(endDate as string) : undefined,
-          categoryId: categoryId && categoryId !== "all" ? categoryId as string : undefined,
-          search: search as string,
+        startDate: startDate ? new Date(startDate as string) : undefined,
+        endDate: endDate ? new Date(endDate as string) : undefined,
+        categoryId: categoryId && categoryId !== "all" ? categoryId as string : undefined,
+        search: search as string,
           limit: dataSource === "both" ? undefined : (limit ? parseInt(limit as string) : 100),
           offset: dataSource === "both" ? undefined : (offset ? parseInt(offset as string) : 0),
         });
@@ -1590,7 +1598,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           }
         } else {
           // Parse CSV with robust error handling
-          const csvContent = file.buffer.toString("utf-8");
+        const csvContent = file.buffer.toString("utf-8");
           
           try {
             // Try to auto-detect delimiter by checking first few lines
@@ -1611,9 +1619,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             
             // Parse with relaxed column handling
             records = parse(csvContent, {
-              columns: true,
-              skip_empty_lines: true,
-              trim: true,
+          columns: true,
+          skip_empty_lines: true,
+          trim: true,
               delimiter: delimiter,
               relax_column_count: true, // Allow inconsistent column counts
               relax_quotes: true, // Handle malformed quotes
@@ -1752,7 +1760,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           
           return merchant || null;
         };
-
+        
         // Auto-categorization function
         const categorizeTransaction = (description: string, amount: number, isIncome: boolean): string | null => {
           if (!description) return null;
@@ -1887,7 +1895,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             // Extract merchant name
             const merchantName = extractMerchantName(cleanDescription);
 
-            // Auto-categorize
+          // Auto-categorize
             let categoryId = categorizeTransaction(cleanDescription, Math.abs(parsedAmount), isIncome);
             
             // CRITICAL: If a category is assigned, update isIncome based on category type
@@ -1904,17 +1912,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               }
             }
 
-            return {
-              userId,
-              accountId: importAccount!.id,
-              date: parsedDate,
+          return {
+            userId,
+            accountId: importAccount!.id,
+            date: parsedDate,
               description: cleanDescription,
               originalDescription: cleanDescription,
               amount: String(Math.abs(parsedAmount)),
-              isIncome,
-              categoryId,
+            isIncome,
+            categoryId,
               merchantName,
-            };
+          };
           })
           .filter((t): t is NonNullable<typeof t> => t !== null); // Remove skipped rows
 
@@ -1923,7 +1931,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         
         // Save to cloud database if destination is "cloud" or "both"
         if (destination === "cloud" || destination === "both") {
-          const created = await storage.createTransactions(transactionsToCreate);
+        const created = await storage.createTransactions(transactionsToCreate);
           cloudImported = created.length;
           console.log(`✅ Imported ${cloudImported} transactions to cloud database`);
           

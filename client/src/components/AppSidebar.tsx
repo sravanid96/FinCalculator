@@ -8,6 +8,8 @@ import {
   Settings,
   LogOut,
   Wallet,
+  LineChart,
+  HeartPulse,
 } from "lucide-react";
 import {
   Sidebar,
@@ -30,6 +32,16 @@ const mainNavItems = [
     title: "Dashboard",
     url: "/",
     icon: LayoutDashboard,
+  },
+  {
+    title: "Options",
+    url: "/options",
+    icon: LineChart,
+  },
+  {
+    title: "Health",
+    url: "/health",
+    icon: HeartPulse,
   },
   {
     title: "Transactions",

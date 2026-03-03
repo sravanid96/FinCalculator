@@ -222,3 +222,77 @@ export const TIME_PERIODS = [
 ] as const;
 
 export type TimePeriod = typeof TIME_PERIODS[number]["value"];
+
+// ==================== Health Tables (local DB only) ====================
+
+export const healthLabReports = pgTable("health_lab_reports", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  fileName: varchar("file_name").notNull(),
+  reportDate: varchar("report_date"),
+  labName: varchar("lab_name"),
+  parsedResults: jsonb("parsed_results").notNull().default([]),
+  rawText: text("raw_text").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const healthConditions = pgTable("health_conditions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  name: varchar("name").notNull(),
+  severity: varchar("severity").notNull().default("moderate"),
+  diagnosedDate: varchar("diagnosed_date"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const healthMedications = pgTable("health_medications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  name: varchar("name").notNull(),
+  dosage: varchar("dosage").notNull(),
+  frequency: varchar("frequency").notNull(),
+  timesOfDay: jsonb("times_of_day").notNull().default([]),
+  purpose: varchar("purpose"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const healthDietEntries = pgTable("health_diet_entries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  mealType: varchar("meal_type").notNull(),
+  foods: jsonb("foods").notNull().default([]),
+  typicalTime: varchar("typical_time"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const healthRecommendations = pgTable("health_recommendations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  medicationSchedule: jsonb("medication_schedule").notNull().default([]),
+  mealPlan: jsonb("meal_plan").notNull().default([]),
+  foodAdjustments: jsonb("food_adjustments").notNull().default([]),
+  exerciseRoutine: jsonb("exercise_routine").notNull().default({}),
+  insights: jsonb("insights").notNull().default([]),
+  summary: text("summary").notNull().default(""),
+  generatedAt: timestamp("generated_at").defaultNow(),
+});
+
+export const insertHealthLabReportSchema = createInsertSchema(healthLabReports).omit({ id: true, createdAt: true });
+export const insertHealthConditionSchema = createInsertSchema(healthConditions).omit({ id: true, createdAt: true });
+export const insertHealthMedicationSchema = createInsertSchema(healthMedications).omit({ id: true, createdAt: true });
+export const insertHealthDietEntrySchema = createInsertSchema(healthDietEntries).omit({ id: true, createdAt: true });
+export const insertHealthRecommendationSchema = createInsertSchema(healthRecommendations).omit({ id: true, generatedAt: true });
+
+export type HealthLabReport = typeof healthLabReports.$inferSelect;
+export type InsertHealthLabReport = z.infer<typeof insertHealthLabReportSchema>;
+export type HealthCondition = typeof healthConditions.$inferSelect;
+export type InsertHealthCondition = z.infer<typeof insertHealthConditionSchema>;
+export type HealthMedication = typeof healthMedications.$inferSelect;
+export type InsertHealthMedication = z.infer<typeof insertHealthMedicationSchema>;
+export type HealthDietEntry = typeof healthDietEntries.$inferSelect;
+export type InsertHealthDietEntry = z.infer<typeof insertHealthDietEntrySchema>;
+export type HealthRecommendation = typeof healthRecommendations.$inferSelect;
+export type InsertHealthRecommendation = z.infer<typeof insertHealthRecommendationSchema>;

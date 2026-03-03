@@ -11,11 +11,13 @@ import { useAuth } from "@/hooks/useAuth";
 import Landing from "@/pages/Landing";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
+import Options from "@/pages/Options";
 import Transactions from "@/pages/Transactions";
 import Categories from "@/pages/Categories";
 import Reports from "@/pages/Reports";
 import Accounts from "@/pages/Accounts";
 import Settings from "@/pages/Settings";
+import Health from "@/pages/Health";
 import NotFound from "@/pages/not-found";
 
 function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
@@ -47,6 +49,8 @@ function AuthenticatedRouter() {
     <AuthenticatedLayout>
       <Switch>
         <Route path="/" component={Dashboard} />
+        <Route path="/options" component={Options} />
+        <Route path="/health" component={Health} />
         <Route path="/transactions" component={Transactions} />
         <Route path="/categories" component={Categories} />
         <Route path="/reports" component={Reports} />
