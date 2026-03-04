@@ -47,10 +47,8 @@ router.post("/lab-reports", isAuthenticated, upload.single("file"), async (req: 
     const userId = getUserId(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     if (!req.file) return res.status(400).json({ error: "No PDF file provided" });
-    if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY) {
-      return res.status(500).json({ error: "GEMINI_API_KEY or GOOGLE_API_KEY not configured. Add it to your .env file for PDF lab report parsing." });
-    }
 
+    // Lab reports are parsed locally by default (no external API). Set LAB_REPORT_USE_AI=true and GEMINI_API_KEY for AI parsing.
     const db = getLocalDb();
     const parsed = await parseLabReport(req.file.buffer);
 
@@ -371,10 +369,6 @@ router.post("/recommendations/generate", isAuthenticated, async (req: any, res) 
   try {
     const userId = getUserId(req);
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured. Add it to your .env file." });
-    }
 
     const db = getLocalDb();
 

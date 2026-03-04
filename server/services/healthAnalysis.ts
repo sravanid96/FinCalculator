@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type {
   ParsedLabResult,
   HealthConditionData,
@@ -11,9 +10,33 @@ import type {
   HealthInsight,
 } from "@shared/healthSchema";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+// Local-only health plan generation using a local LLM via Ollama (e.g. mistral:instruct).
+// No external API keys are required; everything stays on the machine where the server runs.
+
+async function callLocalMistral(prompt: string): Promise<string> {
+  const model = process.env.HEALTH_LLM_MODEL || "mistral:instruct";
+  const res = await fetch("http://localhost:11434/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      prompt,
+      stream: false,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const suffix = text ? ": " + text : "";
+    throw new Error("Local LLM error (" + res.status + " " + res.statusText + ")" + suffix);
+  }
+
+  const data = (await res.json()) as { response?: string; error?: string };
+  if (!data.response) {
+    throw new Error(data.error || "No response from local LLM");
+  }
+  return data.response;
+}
 
 interface HealthPlanInput {
   labResults: ParsedLabResult[];
@@ -142,20 +165,10 @@ Important guidelines:
 - Be practical and realistic - suggest commonly available foods
 - Consider medication-food interactions (e.g., thyroid meds on empty stomach, statins at night)`;
 
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 8192,
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  const content = response.content[0];
-  if (content.type !== "text") {
-    throw new Error("Unexpected response type from Claude");
-  }
-
-  const jsonMatch = /\{[\s\S]*\}/.exec(content.text);
+  const text = await callLocalMistral(prompt);
+  const jsonMatch = /\{[\s\S]*\}/.exec(text);
   if (!jsonMatch) {
-    throw new Error("Failed to parse health plan from Claude response");
+    throw new Error("Failed to parse health plan from AI response");
   }
 
   const parsed = JSON.parse(jsonMatch[0]);

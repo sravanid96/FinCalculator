@@ -97,6 +97,12 @@ A comprehensive personal finance management application that helps you aggregate
    PLAID_CLIENT_ID=your_plaid_client_id
    PLAID_SECRET=your_plaid_secret
    PLAID_ENV=sandbox
+   
+   # Health – Lab report PDF parsing (optional)
+   # By default, lab reports are parsed locally only; no data is sent to any external service.
+   # To use AI parsing (Google Gemini), set both:
+   # GEMINI_API_KEY=your_gemini_api_key
+   # LAB_REPORT_USE_AI=true
    ```
 
 4. **Set up the database**
@@ -202,6 +208,12 @@ FinCal/
 - Plaid integration (bank credentials never stored)
 - Environment variable protection
 - CORS configuration
+
+### Privacy – Lab Report PDFs (Health tab)
+
+- **By default, lab report data never leaves your server.** PDFs are parsed locally using text extraction and pattern matching; no external API is called.
+- **AI parsing is opt-in.** Only if you set `LAB_REPORT_USE_AI=true` and `GEMINI_API_KEY` will PDF content be sent to Google’s Gemini API for parsing. When used, Google’s policy states that API data is not used to train models ([usage policies](https://ai.google.dev/gemini-api/docs/usage-policies)).
+- To keep lab data fully private, do not set `LAB_REPORT_USE_AI` (or set it to `false`). Local parsing works for most text-based lab PDFs.
 
 ## 🗄️ Database Options
 

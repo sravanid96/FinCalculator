@@ -94,7 +94,7 @@
     "wouter": "^3.3.5",
     "ws": "^8.18.0",
     "yahoo-finance2": "^3.13.1",
-    "zod": "^3.24.2",
+    "zod": "^3.25.0",
     "zod-validation-error": "^3.4.0"
   },
   "devDependencies": {
