@@ -61,16 +61,23 @@ export default function Health() {
   const generateMutation = useMutation({
     mutationFn: async () => {
       const token = localStorage.getItem("auth_token");
-      const res = await fetch("/api/health/recommendations/generate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        credentials: "include",
-      });
+      let res: Response;
+      try {
+        res = await fetch("/api/health/recommendations/generate", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          credentials: "include",
+        });
+      } catch (e) {
+        throw new Error(
+          "Could not reach the server. Make sure the app server is running and try again."
+        );
+      }
       if (!res.ok) {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "Failed to generate plan");
       }
       return res.json();

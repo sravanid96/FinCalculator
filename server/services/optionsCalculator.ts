@@ -279,3 +279,78 @@ export function calculateRiskReward(maxProfit: number, maxLoss: number): number 
   if (maxLoss === 0) return Infinity;
   return Math.abs(Math.round((maxProfit / Math.abs(maxLoss)) * 100) / 100);
 }
+
+/**
+ * Calculate put-call parity metrics
+ * Parity relationship: C + PV(X) = P + S
+ * Where: C = call price, P = put price, X = strike, S = stock price, PV(X) = present value of strike
+ */
+export interface ParityMetrics {
+  callPriceDeviation: number; // % deviation of call from parity-implied price
+  putPriceDeviation: number; // % deviation of put from parity-implied price
+  parityImpliedCallPrice: number; // What call should be worth per parity
+  parityImpliedPutPrice: number; // What put should be worth per parity
+  arbitrageProfitPercent: number; // % profit from arbitrage
+  arbitrageProfitDollars: number; // $ profit from arbitrage (per contract)
+  direction: "call_expensive" | "put_expensive" | "fair";
+  purityViolation: number; // Raw deviation: C + PV(X) - P - S (in dollars)
+}
+
+/**
+ * Calculate parity metrics for a call-put pair at same strike/expiration
+ */
+export function calculateParityMetrics(
+  callPrice: number,
+  putPrice: number,
+  strikePrice: number,
+  stockPrice: number,
+  timeToExpirationDays: number,
+  riskFreeRate: number
+): ParityMetrics {
+  // Convert days to years
+  const T = timeToExpirationDays / 365;
+  
+  // Calculate present value of strike: X / (1 + r)^T
+  const pvStrike = strikePrice / Math.pow(1 + riskFreeRate, T);
+  
+  // Parity relationship: C + PV(X) = P + S
+  // Therefore: C_theoretical = P + S - PV(X)
+  const theoreticalCallPrice = putPrice + stockPrice - pvStrike;
+  
+  // And: P_theoretical = C + PV(X) - S
+  const theoreticalPutPrice = callPrice + pvStrike - stockPrice;
+  
+  // Calculate deviations
+  const callDeviation = (callPrice - theoreticalCallPrice) / theoreticalCallPrice;
+  const putDeviation = (putPrice - theoreticalPutPrice) / theoreticalPutPrice;
+  
+  // Calculate parity violation (raw dollar value)
+  const violation = callPrice + pvStrike - putPrice - stockPrice;
+  
+  // Arbitrage profit: If C + PV(X) - P - S > 0, you could:
+  // - Buy put and stock, sell call = receive this much profit
+  // If C + PV(X) - P - S < 0, you could:
+  // - Sell put and stock, buy call = profit from this
+  const arbitrageProfitPercent =
+    Math.abs(violation) / ((callPrice + putPrice + strikePrice + stockPrice) / 4);
+  const arbitrageProfitDollars = Math.abs(violation) * 100; // Options are per 100 shares
+  
+  // Determine direction of mispricing
+  let direction: "call_expensive" | "put_expensive" | "fair" = "fair";
+  if (violation > 0.01) {
+    direction = "call_expensive";
+  } else if (violation < -0.01) {
+    direction = "put_expensive";
+  }
+  
+  return {
+    callPriceDeviation: Math.round(callDeviation * 10000) / 100, // percentage
+    putPriceDeviation: Math.round(putDeviation * 10000) / 100, // percentage
+    parityImpliedCallPrice: Math.round(theoreticalCallPrice * 100) / 100,
+    parityImpliedPutPrice: Math.round(theoreticalPutPrice * 100) / 100,
+    arbitrageProfitPercent: Math.round(arbitrageProfitPercent * 10000) / 100, // percentage
+    arbitrageProfitDollars: Math.round(arbitrageProfitDollars * 100) / 100,
+    direction,
+    purityViolation: Math.round(violation * 100) / 100,
+  };
+}

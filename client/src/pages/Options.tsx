@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Search,
@@ -10,6 +10,9 @@ import {
   DollarSign,
   BarChart3,
   Loader2,
+  Info,
+  DownloadCloud,
+  Network,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -20,11 +23,29 @@ import { ProfitLossChart } from "@/components/options/ProfitLossChart";
 import { EarningsCalendar } from "@/components/options/EarningsCalendar";
 import { SupportResistanceChart } from "@/components/options/SupportResistanceChart";
 import { StrategyComparison } from "@/components/options/StrategyComparison";
+import { ParityReport } from "@/components/options/ParityReport";
+import { ParityAnalysis } from "@/components/options/ParityAnalysis";
 import type { TickerAnalysis, TradeIdea } from "@shared/optionsSchema";
+import type { ParityAnalysisResponse } from "@/types/parity";
 
 export default function Options() {
   const [selectedTicker, setSelectedTicker] = useState<string>("");
   const [selectedTrade, setSelectedTrade] = useState<TradeIdea | null>(null);
+  const [parityThreshold, setParityThreshold] = useState<number>(0.5);
+
+  // Load parity threshold from localStorage
+  useEffect(() => {
+    const stored = localStorage.getItem("parityThreshold");
+    if (stored) {
+      setParityThreshold(parseFloat(stored));
+    }
+  }, []);
+
+  // Save parity threshold to localStorage
+  const handleThresholdChange = useCallback((newThreshold: number) => {
+    setParityThreshold(newThreshold);
+    localStorage.setItem("parityThreshold", newThreshold.toString());
+  }, []);
 
   const { data: analysis, isLoading, error } = useQuery<TickerAnalysis>({
     queryKey: ["/api/options/analysis", selectedTicker],
@@ -32,6 +53,21 @@ export default function Options() {
       if (!selectedTicker) throw new Error("No ticker selected");
       const res = await fetch(`/api/options/analysis/${selectedTicker}`);
       if (!res.ok) throw new Error("Failed to fetch analysis");
+      return res.json();
+    },
+    enabled: !!selectedTicker,
+    staleTime: 60 * 1000,
+    retry: 1,
+  });
+
+  const { data: parityData, isLoading: parityLoading } = useQuery<ParityAnalysisResponse>({
+    queryKey: ["/api/options/parity-all", selectedTicker],
+    queryFn: async () => {
+      if (!selectedTicker) throw new Error("No ticker selected");
+      const res = await fetch(
+        `/api/options/parity-all/${selectedTicker}?threshold=${parityThreshold}`
+      );
+      if (!res.ok) throw new Error("Failed to fetch parity data");
       return res.json();
     },
     enabled: !!selectedTicker,
@@ -148,10 +184,42 @@ export default function Options() {
           <div className="grid gap-6 lg:grid-cols-3">
             {/* Left Panel - Trade Ideas */}
             <div className="space-y-4">
-              <h3 className="flex items-center gap-2 text-lg font-semibold">
-                <Target className="h-5 w-5" />
-                Trade Ideas
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="flex items-center gap-2 text-lg font-semibold">
+                  <Target className="h-5 w-5" />
+                  Trade Ideas
+                </h3>
+              </div>
+
+              {/* Put-Call Parity Threshold Control */}
+              <Card>
+                <CardContent className="p-4 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Info className="h-4 w-4 text-blue-500" />
+                    <label className="text-sm font-medium">Parity Threshold</label>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="range"
+                        min="0.1"
+                        max="2"
+                        step="0.1"
+                        value={parityThreshold}
+                        onChange={(e) => handleThresholdChange(parseFloat(e.target.value))}
+                        className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                      />
+                      <span className="text-sm font-semibold w-12 text-right">
+                        {parityThreshold.toFixed(1)}%
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Flag arbitrage when deviation exceeds this threshold
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+
               <div className="space-y-3 max-h-[600px] overflow-y-auto pr-2">
                 {analysis.tradeIdeas.length > 0 ? (
                   analysis.tradeIdeas.map((idea) => (
@@ -159,6 +227,7 @@ export default function Options() {
                       key={idea.id}
                       idea={idea}
                       selected={selectedTrade?.id === idea.id}
+                      parityThreshold={parityThreshold}
                       onClick={() => handleTradeSelect(idea)}
                     />
                   ))
@@ -175,18 +244,26 @@ export default function Options() {
             {/* Center Panel - Charts */}
             <div className="lg:col-span-2 space-y-6">
               <Tabs defaultValue="pl" className="w-full">
-                <TabsList className="grid w-full grid-cols-3">
+                <TabsList className="grid w-full grid-cols-5">
                   <TabsTrigger value="pl" className="flex items-center gap-2">
                     <DollarSign className="h-4 w-4" />
-                    P&L Chart
+                    <span className="hidden sm:inline">P&L</span>
                   </TabsTrigger>
                   <TabsTrigger value="sr" className="flex items-center gap-2">
                     <BarChart3 className="h-4 w-4" />
-                    Support/Resistance
+                    <span className="hidden sm:inline">S/R</span>
                   </TabsTrigger>
                   <TabsTrigger value="compare" className="flex items-center gap-2">
                     <Target className="h-4 w-4" />
-                    Compare
+                    <span className="hidden sm:inline">Compare</span>
+                  </TabsTrigger>
+                  <TabsTrigger value="parity" className="flex items-center gap-2">
+                    <Network className="h-4 w-4" />
+                    <span className="hidden sm:inline">Parity</span>
+                  </TabsTrigger>
+                  <TabsTrigger value="reports" className="flex items-center gap-2">
+                    <DownloadCloud className="h-4 w-4" />
+                    <span className="hidden sm:inline">Reports</span>
                   </TabsTrigger>
                 </TabsList>
 
@@ -207,6 +284,27 @@ export default function Options() {
 
                 <TabsContent value="compare" className="mt-4">
                   <StrategyComparison comparisons={analysis.strategyComparisons} />
+                </TabsContent>
+
+                <TabsContent value="parity" className="mt-4">
+                  {parityData ? (
+                    <ParityAnalysis
+                      pairs={parityData.pairs}
+                      threshold={parityThreshold}
+                      underlyingPrice={parityData.underlyingPrice}
+                      loading={parityLoading}
+                    />
+                  ) : (
+                    <Card>
+                      <CardContent className="py-8 text-center text-muted-foreground">
+                        Loading parity data...
+                      </CardContent>
+                    </Card>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="reports" className="mt-4">
+                  <ParityReport ticker={selectedTicker} />
                 </TabsContent>
               </Tabs>
 

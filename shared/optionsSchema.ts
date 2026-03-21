@@ -107,6 +107,18 @@ export type OptionStrategy =
   | "straddle"
   | "strangle";
 
+// Put-call parity metrics
+export interface ParityMetrics {
+  callPriceDeviation: number; // % deviation of call from parity-implied price
+  putPriceDeviation: number; // % deviation of put from parity-implied price
+  parityImpliedCallPrice: number; // What call should be worth per parity
+  parityImpliedPutPrice: number; // What put should be worth per parity
+  arbitrageProfitPercent: number; // % profit from arbitrage opportunity
+  arbitrageProfitDollars: number; // $ profit from arbitrage (per contract)
+  direction: "call_expensive" | "put_expensive" | "fair";
+  purityViolation: number; // Raw deviation: C + PV(X) - P - S in dollars
+}
+
 // Trade idea result
 export interface TradeIdea {
   id: string;
@@ -127,6 +139,7 @@ export interface TradeIdea {
   earningsDate?: string;
   recommendation: "strong_buy" | "buy" | "neutral" | "avoid";
   notes: string[];
+  parityMetrics?: ParityMetrics; // Optional put-call parity analysis
 }
 
 // Individual leg of a trade

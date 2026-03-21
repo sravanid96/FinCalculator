@@ -15,15 +15,26 @@ import type {
 
 async function callLocalMistral(prompt: string): Promise<string> {
   const model = process.env.HEALTH_LLM_MODEL || "mistral:instruct";
-  const res = await fetch("http://localhost:11434/api/generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      prompt,
-      stream: false,
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch("http://localhost:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        prompt,
+        stream: false,
+      }),
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/ECONNREFUSED|fetch failed|network|ENOTFOUND/i.test(msg)) {
+      throw new Error(
+        "Ollama is not reachable. Start the Ollama app (or run 'ollama serve' on the same machine as this server), then try again."
+      );
+    }
+    throw err;
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
