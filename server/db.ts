@@ -4,15 +4,20 @@ import * as schema from "@shared/schema";
 
 const { Pool } = pg;
 
-// For mobile/desktop access, you MUST use a cloud PostgreSQL database
-// Local PostgreSQL only works for single-machine development
-if (!process.env.DATABASE_URL) {
+/**
+ * Local-first: when LOCAL_DATABASE_URL is set, the app and `npm run db:push` use that Postgres.
+ * Otherwise falls back to DATABASE_URL (e.g. Neon for deploy / mobile).
+ * Keep this in sync with drizzle.config.ts.
+ */
+export const databaseConnectionUrl =
+  (process.env.LOCAL_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim()) ?? "";
+
+if (!databaseConnectionUrl) {
   throw new Error(
-    "DATABASE_URL must be set. For mobile/desktop access, use a cloud PostgreSQL database.\n" +
-    "Options: Neon (neon.tech), Supabase (supabase.com), Railway (railway.app), or similar.\n" +
-    "Create a .env file with: DATABASE_URL=your_cloud_postgresql_connection_string"
+    "Set LOCAL_DATABASE_URL for local Postgres, or DATABASE_URL for cloud.\n" +
+    "Example: LOCAL_DATABASE_URL=postgresql://user:password@localhost:5432/fincal"
   );
 }
 
-export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+export const pool = new Pool({ connectionString: databaseConnectionUrl });
 export const db = drizzle(pool, { schema });

@@ -128,12 +128,54 @@ export const csvMappings = pgTable("csv_mappings", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// Trading journal (win rate, profit factor on closed trades)
+export const tradeJournal = pgTable(
+  "trade_journal",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    symbol: varchar("symbol").notNull(),
+    strategy: varchar("strategy"),
+    side: varchar("side").notNull(), // long | short
+    instrumentType: varchar("instrument_type").notNull().default("stock"), // stock | option | other
+    quantity: integer("quantity").notNull(),
+    contractMultiplier: decimal("contract_multiplier", { precision: 12, scale: 4 }).default("1"),
+    entryDate: timestamp("entry_date").notNull(),
+    exitDate: timestamp("exit_date"),
+    entryPrice: decimal("entry_price", { precision: 16, scale: 6 }).notNull(),
+    exitPrice: decimal("exit_price", { precision: 16, scale: 6 }),
+    fees: decimal("fees", { precision: 12, scale: 2 }).default("0"),
+    realizedPnl: decimal("realized_pnl", { precision: 16, scale: 2 }),
+    notes: text("notes"),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [index("idx_trade_journal_user").on(table.userId)]
+);
+
+export const insertTradeJournalSchema = createInsertSchema(tradeJournal).omit({
+  id: true,
+  userId: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type TradeJournalEntry = typeof tradeJournal.$inferSelect;
+export type InsertTradeJournal = z.infer<typeof insertTradeJournalSchema>;
+
 // Relations
 export const usersRelations = relations(users, ({ many, one }) => ({
   accounts: many(accounts),
   transactions: many(transactions),
   categories: many(categories),
   preferences: one(userPreferences),
+  tradeJournalEntries: many(tradeJournal),
+}));
+
+export const tradeJournalRelations = relations(tradeJournal, ({ one }) => ({
+  user: one(users, { fields: [tradeJournal.userId], references: [users.id] }),
 }));
 
 export const accountsRelations = relations(accounts, ({ one, many }) => ({

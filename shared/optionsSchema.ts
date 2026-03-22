@@ -185,6 +185,49 @@ export interface StrategyComparison {
   cons: string[];
 }
 
+// Framework check data
+export interface FrameworkCheck {
+  id: string;
+  label: string;
+  passed: boolean;
+  pillar: "fundamental" | "technical" | "options" | "macro" | "risk";
+  value?: string | number;
+  description?: string;
+}
+
+// Technical indicators from analysis
+export interface TechnicalIndicators {
+  sma20: number | null;
+  sma50: number | null;
+  sma200: number | null;
+  rsi: number | null;
+  atr: number | null;
+  ivRank: number | null;
+  avgVolume: number;
+  recentVolume: number;
+  trend: "bullish" | "bearish" | "neutral" | "mixed";
+  percentFrom52WeekHigh: number | null;
+  percentFrom52WeekLow: number | null;
+}
+
+// Pillar scores
+export interface PillarScores {
+  fundamental: { checked: number; total: number; pct: number };
+  technical: { checked: number; total: number; pct: number };
+  options: { checked: number; total: number; pct: number };
+  macro: { checked: number; total: number; pct: number };
+  risk: { checked: number; total: number; pct: number };
+  overall: number;
+}
+
+// Framework analysis result
+export interface FrameworkAnalysis {
+  indicators: TechnicalIndicators;
+  checks: FrameworkCheck[];
+  scores: PillarScores;
+  suggestions: string[];
+}
+
 // Full analysis response
 export interface TickerAnalysis {
   quote: StockQuote;
@@ -193,6 +236,7 @@ export interface TickerAnalysis {
   upcomingEarnings: EarningsEvent | null;
   tradeIdeas: TradeIdea[];
   strategyComparisons: StrategyComparison[];
+  frameworkAnalysis?: FrameworkAnalysis;
 }
 
 // API request/response schemas for validation

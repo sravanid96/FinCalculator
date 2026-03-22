@@ -6,6 +6,7 @@ import {
   transactionSplits,
   userPreferences,
   csvMappings,
+  tradeJournal,
   type User,
   type UpsertUser,
   type Account,
@@ -20,6 +21,8 @@ import {
   type InsertUserPreferences,
   type CsvMapping,
   type InsertCsvMapping,
+  type TradeJournalEntry,
+  type InsertTradeJournal,
   DEFAULT_CATEGORIES,
 } from "@shared/schema";
 import { db } from "./db";
@@ -81,6 +84,17 @@ export interface IStorage {
     categoryBreakdown: Array<{ name: string; value: number; color: string }>;
     cashFlowTrend: Array<{ date: string; income: number; expenses: number }>;
   }>;
+
+  // Options trade journal
+  getTradeJournalEntries(userId: string): Promise<TradeJournalEntry[]>;
+  getTradeJournalEntry(userId: string, id: string): Promise<TradeJournalEntry | undefined>;
+  createTradeJournalEntry(userId: string, data: InsertTradeJournal): Promise<TradeJournalEntry>;
+  updateTradeJournalEntry(
+    userId: string,
+    id: string,
+    updates: Partial<InsertTradeJournal>
+  ): Promise<TradeJournalEntry | undefined>;
+  deleteTradeJournalEntry(userId: string, id: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -388,6 +402,47 @@ export class DatabaseStorage implements IStorage {
       categoryBreakdown,
       cashFlowTrend,
     };
+  }
+
+  async getTradeJournalEntries(userId: string): Promise<TradeJournalEntry[]> {
+    return db
+      .select()
+      .from(tradeJournal)
+      .where(eq(tradeJournal.userId, userId))
+      .orderBy(desc(tradeJournal.entryDate));
+  }
+
+  async getTradeJournalEntry(userId: string, id: string): Promise<TradeJournalEntry | undefined> {
+    const [row] = await db
+      .select()
+      .from(tradeJournal)
+      .where(and(eq(tradeJournal.userId, userId), eq(tradeJournal.id, id)));
+    return row;
+  }
+
+  async createTradeJournalEntry(userId: string, data: InsertTradeJournal): Promise<TradeJournalEntry> {
+    const [row] = await db
+      .insert(tradeJournal)
+      .values({ ...data, userId })
+      .returning();
+    return row;
+  }
+
+  async updateTradeJournalEntry(
+    userId: string,
+    id: string,
+    updates: Partial<InsertTradeJournal>
+  ): Promise<TradeJournalEntry | undefined> {
+    const [row] = await db
+      .update(tradeJournal)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(and(eq(tradeJournal.id, id), eq(tradeJournal.userId, userId)))
+      .returning();
+    return row;
+  }
+
+  async deleteTradeJournalEntry(userId: string, id: string): Promise<void> {
+    await db.delete(tradeJournal).where(and(eq(tradeJournal.id, id), eq(tradeJournal.userId, userId)));
   }
 }
 

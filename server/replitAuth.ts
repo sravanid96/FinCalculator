@@ -8,6 +8,7 @@ import memoize from "memoizee";
 import connectPg from "connect-pg-simple";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
+import { databaseConnectionUrl } from "./db";
 
 const getOidcConfig = memoize(
   async () => {
@@ -23,7 +24,7 @@ export function getSession() {
   const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week
   const pgStore = connectPg(session);
   const sessionStore = new pgStore({
-    conString: process.env.DATABASE_URL,
+    conString: databaseConnectionUrl,
     createTableIfMissing: false,
     ttl: sessionTtl,
     tableName: "sessions",

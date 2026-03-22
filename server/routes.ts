@@ -9,6 +9,8 @@ import {
   accounts,
   transactions,
 } from "@shared/schema";
+import { z } from "zod";
+import { computeRealizedPnl, tradeJournalStats } from "./tradeJournalUtils";
 import { subDays, startOfMonth, endOfMonth, startOfYear, subMonths, subYears } from "date-fns";
 import multer from "multer";
 import { parse } from "csv-parse/sync";
@@ -2804,6 +2806,181 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (error) {
       console.error("Error updating preferences:", error);
       res.status(500).json({ message: "Failed to update preferences" });
+    }
+  });
+
+  const tradeJournalCreateBody = z.object({
+    symbol: z.string().min(1).max(32),
+    strategy: z.string().max(500).optional().nullable(),
+    side: z.enum(["long", "short"]),
+    instrumentType: z.enum(["stock", "option", "other"]).default("stock"),
+    quantity: z.number().int().positive(),
+    contractMultiplier: z
+      .union([z.string(), z.number()])
+      .optional()
+      .transform((v) => (v === undefined ? "1" : String(v))),
+    entryDate: z.coerce.date(),
+    exitDate: z.coerce.date().optional().nullable(),
+    entryPrice: z.union([z.string(), z.number()]).transform(String),
+    exitPrice: z
+      .union([z.string(), z.number()])
+      .optional()
+      .nullable()
+      .transform((v) => (v === null || v === undefined ? null : String(v))),
+    fees: z
+      .union([z.string(), z.number()])
+      .optional()
+      .transform((v) => (v === undefined ? "0" : String(v))),
+    notes: z.string().optional().nullable(),
+  });
+
+  const tradeJournalPatchBody = z.object({
+    symbol: z.string().min(1).max(32).optional(),
+    strategy: z.string().max(500).optional().nullable(),
+    side: z.enum(["long", "short"]).optional(),
+    instrumentType: z.enum(["stock", "option", "other"]).optional(),
+    quantity: z.number().int().positive().optional(),
+    contractMultiplier: z.union([z.string(), z.number()]).optional(),
+    entryDate: z.coerce.date().optional(),
+    exitDate: z.union([z.coerce.date(), z.null()]).optional(),
+    entryPrice: z.union([z.string(), z.number()]).optional(),
+    exitPrice: z.union([z.string(), z.number(), z.null()]).optional(),
+    fees: z.union([z.string(), z.number()]).optional(),
+    notes: z.string().optional().nullable(),
+  });
+
+  app.get("/api/trade-journal", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ message: "Unauthorized" });
+      const entries = await storage.getTradeJournalEntries(userId);
+      const stats = tradeJournalStats(entries);
+      res.json({ entries, stats });
+    } catch (error) {
+      console.error("Error fetching trade journal:", error);
+      res.status(500).json({ message: "Failed to fetch trade journal" });
+    }
+  });
+
+  app.post("/api/trade-journal", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ message: "Unauthorized" });
+      const parsed = tradeJournalCreateBody.parse(req.body);
+      let realizedPnl: string | null = null;
+      if (parsed.exitDate && parsed.exitPrice != null) {
+        realizedPnl = String(
+          computeRealizedPnl({
+            side: parsed.side,
+            entryPrice: parsed.entryPrice,
+            exitPrice: parsed.exitPrice,
+            quantity: parsed.quantity,
+            contractMultiplier: parsed.contractMultiplier,
+            fees: parsed.fees,
+          })
+        );
+      }
+      const row = await storage.createTradeJournalEntry(userId, {
+        symbol: parsed.symbol.toUpperCase(),
+        strategy: parsed.strategy ?? null,
+        side: parsed.side,
+        instrumentType: parsed.instrumentType,
+        quantity: parsed.quantity,
+        contractMultiplier: parsed.contractMultiplier,
+        entryDate: parsed.entryDate,
+        exitDate: parsed.exitDate ?? null,
+        entryPrice: parsed.entryPrice,
+        exitPrice: parsed.exitPrice ?? null,
+        fees: parsed.fees,
+        notes: parsed.notes ?? null,
+        realizedPnl,
+      });
+      const entries = await storage.getTradeJournalEntries(userId);
+      res.status(201).json({ entry: row, stats: tradeJournalStats(entries) });
+    } catch (error: any) {
+      if (error?.name === "ZodError") {
+        return res.status(400).json({ message: "Invalid trade data", issues: error.issues });
+      }
+      console.error("Error creating trade journal entry:", error);
+      res.status(500).json({ message: "Failed to create trade" });
+    }
+  });
+
+  app.patch("/api/trade-journal/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ message: "Unauthorized" });
+      const { id } = req.params;
+      const partial = tradeJournalPatchBody.parse(req.body);
+      const existing = await storage.getTradeJournalEntry(userId, id);
+      if (!existing) return res.status(404).json({ message: "Trade not found" });
+
+      const symbol = partial.symbol !== undefined ? partial.symbol.toUpperCase() : existing.symbol;
+      const strategy = partial.strategy !== undefined ? partial.strategy : existing.strategy;
+      const side = partial.side ?? existing.side;
+      const instrumentType = partial.instrumentType ?? existing.instrumentType;
+      const quantity = partial.quantity ?? existing.quantity;
+      const contractMultiplier =
+        partial.contractMultiplier !== undefined ? partial.contractMultiplier : existing.contractMultiplier ?? "1";
+      const entryDate = partial.entryDate ?? existing.entryDate;
+      const exitDate = partial.exitDate !== undefined ? partial.exitDate : existing.exitDate;
+      const entryPrice = partial.entryPrice ?? existing.entryPrice;
+      const exitPrice =
+        partial.exitPrice !== undefined ? partial.exitPrice : existing.exitPrice != null ? existing.exitPrice : null;
+      const fees = partial.fees ?? existing.fees ?? "0";
+      const notes = partial.notes !== undefined ? partial.notes : existing.notes;
+
+      let realizedPnl: string | null = null;
+      if (exitDate && exitPrice != null) {
+        realizedPnl = String(
+          computeRealizedPnl({
+            side,
+            entryPrice,
+            exitPrice,
+            quantity,
+            contractMultiplier: String(contractMultiplier),
+            fees: String(fees),
+          })
+        );
+      }
+
+      const row = await storage.updateTradeJournalEntry(userId, id, {
+        symbol,
+        strategy,
+        side,
+        instrumentType,
+        quantity,
+        contractMultiplier: String(contractMultiplier),
+        entryDate,
+        exitDate,
+        entryPrice: String(entryPrice),
+        exitPrice: exitPrice != null ? String(exitPrice) : null,
+        fees: String(fees),
+        notes,
+        realizedPnl,
+      });
+      const entries = await storage.getTradeJournalEntries(userId);
+      res.json({ entry: row, stats: tradeJournalStats(entries) });
+    } catch (error: any) {
+      if (error?.name === "ZodError") {
+        return res.status(400).json({ message: "Invalid trade data", issues: error.issues });
+      }
+      console.error("Error updating trade journal entry:", error);
+      res.status(500).json({ message: "Failed to update trade" });
+    }
+  });
+
+  app.delete("/api/trade-journal/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ message: "Unauthorized" });
+      const { id } = req.params;
+      await storage.deleteTradeJournalEntry(userId, id);
+      const entries = await storage.getTradeJournalEntries(userId);
+      res.json({ stats: tradeJournalStats(entries) });
+    } catch (error) {
+      console.error("Error deleting trade journal entry:", error);
+      res.status(500).json({ message: "Failed to delete trade" });
     }
   });
 

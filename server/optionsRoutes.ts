@@ -9,6 +9,7 @@ import { calculatePL } from "./services/optionsCalculator";
 import { calculateSupportResistance } from "./services/supportResistance";
 import { getUpcomingEarnings } from "./services/earningsService";
 import { generateTradeIdeas, generateStrategyComparison } from "./services/tradeIdeaGenerator";
+import { generateFrameworkAnalysis } from "./services/frameworkAnalysis";
 import { plCalculationSchema, DEFAULT_TRADE_CONFIG } from "../shared/optionsSchema";
 import type { TickerAnalysis } from "../shared/optionsSchema";
 
@@ -172,6 +173,16 @@ router.get("/analysis/:ticker", async (req: Request, res: Response) => {
     const tradeIdeas = generateTradeIdeas(chain, earnings, DEFAULT_TRADE_CONFIG);
     const strategyComparisons = generateStrategyComparison(chain, earnings, quote);
 
+    // Generate framework analysis with auto-calculated checks and scores
+    const frameworkAnalysis = await generateFrameworkAnalysis(
+      quote,
+      historicalPrices,
+      chain,
+      supportResistance,
+      earnings,
+      tradeIdeas
+    );
+
     const analysis: TickerAnalysis = {
       quote,
       optionsChain: chain,
@@ -179,12 +190,13 @@ router.get("/analysis/:ticker", async (req: Request, res: Response) => {
       upcomingEarnings: earnings,
       tradeIdeas,
       strategyComparisons,
+      frameworkAnalysis,
     };
 
     res.json(analysis);
   } catch (error) {
     console.error(`Error analyzing ${req.params.ticker}:`, error);
-    res.status(500).json({ error: "Failed to analyze ticker" });
+    res.status(500).json({ error: "Failed to analyze ticker", details: (error as Error).message });
   }
 });
 
