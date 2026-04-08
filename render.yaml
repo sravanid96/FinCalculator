@@ -15,5 +15,8 @@ services:
       # - DATABASE_URL
       # - JWT_SECRET
       # - SESSION_SECRET
+      # - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (if using Google sign-in)
+      #   Optional: GOOGLE_CALLBACK_URL — defaults to RENDER_EXTERNAL_URL + /api/auth/google/callback
+      #   In Google Cloud Console, add that same URL under Authorized redirect URIs.
       # - PLAID_CLIENT_ID / PLAID_SECRET / PLAID_ENV (optional)
 

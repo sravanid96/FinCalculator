@@ -7,6 +7,18 @@ import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 
 const JWT_SECRET = process.env.JWT_SECRET || process.env.SESSION_SECRET || "your-secret-key-change-in-production";
 
+/** OAuth callback must be a public HTTPS URL in production; localhost breaks mobile after Google redirects. */
+function getGoogleOAuthCallbackUrl(): string {
+  const explicit = process.env.GOOGLE_CALLBACK_URL?.trim();
+  if (explicit) return explicit;
+  const render = process.env.RENDER_EXTERNAL_URL?.trim();
+  if (render) {
+    return `${render.replace(/\/$/, "")}/api/auth/google/callback`;
+  }
+  const port = process.env.PORT || "3002";
+  return `http://localhost:${port}/api/auth/google/callback`;
+}
+
 export interface AuthUser {
   id: string;
   email: string;
@@ -145,7 +157,7 @@ export async function login(req: Request, res: Response) {
 export function setupGoogleAuth(app: Express): boolean {
   const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
   const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-  const GOOGLE_CALLBACK_URL = process.env.GOOGLE_CALLBACK_URL || "http://localhost:3002/api/auth/google/callback";
+  const GOOGLE_CALLBACK_URL = getGoogleOAuthCallbackUrl();
 
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
     console.warn("⚠️  Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable Google sign-in.");
@@ -232,7 +244,7 @@ export function setupGoogleRoutes(app: Express) {
     "/api/auth/google",
     (req, res, next) => {
       // Log the callback URL being used for debugging
-      const callbackURL = process.env.GOOGLE_CALLBACK_URL || "http://localhost:3002/api/auth/google/callback";
+      const callbackURL = getGoogleOAuthCallbackUrl();
       console.log("🔐 Initiating Google OAuth with callback URL:", callbackURL);
       passport.authenticate("google", { 
         scope: ["profile", "email"]
