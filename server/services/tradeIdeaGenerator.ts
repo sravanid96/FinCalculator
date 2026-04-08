@@ -78,6 +78,27 @@ function findOptionByStrike(
   return options.find((o) => o.strike === strike) || null;
 }
 
+function findNearestStrike(
+  options: OptionContract[],
+  targetStrike: number,
+  direction: "below" | "above"
+): OptionContract | null {
+  if (!options.length) return null;
+
+  const sorted = [...options].sort((a, b) => a.strike - b.strike);
+  if (direction === "below") {
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      if (sorted[i].strike <= targetStrike) return sorted[i];
+    }
+    return sorted[0] || null;
+  }
+
+  for (let i = 0; i < sorted.length; i++) {
+    if (sorted[i].strike >= targetStrike) return sorted[i];
+  }
+  return sorted[sorted.length - 1] || null;
+}
+
 // Generate Put Credit Spread trade idea
 function generatePutCreditSpread(
   chain: OptionsChain,
@@ -93,7 +114,9 @@ function generatePutCreditSpread(
 
   // Find long put (buy) at spread width below short
   const longStrike = shortPut.strike - config.spreadWidth;
-  const longPut = findOptionByStrike(expiration.puts, longStrike);
+  const longPut =
+    findOptionByStrike(expiration.puts, longStrike) ??
+    findNearestStrike(expiration.puts, longStrike, "below");
   if (!longPut) return null;
 
   // Use mid price for calculations
@@ -188,7 +211,9 @@ function generateCallCreditSpread(
 
   // Find long call (buy) at spread width above short
   const longStrike = shortCall.strike + config.spreadWidth;
-  const longCall = findOptionByStrike(expiration.calls, longStrike);
+  const longCall =
+    findOptionByStrike(expiration.calls, longStrike) ??
+    findNearestStrike(expiration.calls, longStrike, "above");
   if (!longCall) return null;
 
   const shortPrice = (shortCall.bid + shortCall.ask) / 2;
@@ -277,8 +302,12 @@ function generateIronCondor(
   // Long legs
   const longPutStrike = shortPut.strike - config.spreadWidth;
   const longCallStrike = shortCall.strike + config.spreadWidth;
-  const longPut = findOptionByStrike(expiration.puts, longPutStrike);
-  const longCall = findOptionByStrike(expiration.calls, longCallStrike);
+  const longPut =
+    findOptionByStrike(expiration.puts, longPutStrike) ??
+    findNearestStrike(expiration.puts, longPutStrike, "below");
+  const longCall =
+    findOptionByStrike(expiration.calls, longCallStrike) ??
+    findNearestStrike(expiration.calls, longCallStrike, "above");
 
   if (!longPut || !longCall) return null;
 

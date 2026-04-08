@@ -12,6 +12,7 @@ import {
   Loader2,
   BookOpen,
   ClipboardList,
+  Shield,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -27,11 +28,15 @@ import { TradingDecisionFramework } from "@/components/options/TradingDecisionFr
 import { TradeLog } from "@/components/options/TradeLog";
 import { FrameworkTradeAnalyzer } from "@/components/options/FrameworkTradeAnalyzer";
 import { TechnicalIndicatorsChart } from "@/components/options/TechnicalIndicatorsChart";
+import { TopTradeIdeasTab } from "@/components/options/TopTradeIdeasTab";
 import type { TickerAnalysis, TradeIdea } from "@shared/optionsSchema";
 
 export default function Options() {
   const [selectedTicker, setSelectedTicker] = useState<string>("");
   const [selectedTrade, setSelectedTrade] = useState<TradeIdea | null>(null);
+  const [activeTab, setActiveTab] = useState<"analysis" | "ideas" | "framework" | "journal">(
+    "analysis"
+  );
 
   const { data: analysis, isLoading, error } = useQuery<TickerAnalysis>({
     queryKey: ["/api/options/analysis", selectedTicker],
@@ -67,11 +72,15 @@ export default function Options() {
         </div>
       </div>
 
-      <Tabs defaultValue="analysis" className="space-y-6">
-        <TabsList className="grid w-full max-w-xl grid-cols-3">
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="space-y-6">
+        <TabsList className="grid w-full max-w-2xl grid-cols-4">
           <TabsTrigger value="analysis" className="gap-1.5">
             <BarChart3 className="h-4 w-4" />
             Analysis
+          </TabsTrigger>
+          <TabsTrigger value="ideas" className="gap-1.5">
+            <Shield className="h-4 w-4" />
+            Ideas
           </TabsTrigger>
           <TabsTrigger value="framework" className="gap-1.5">
             <BookOpen className="h-4 w-4" />
@@ -154,12 +163,25 @@ export default function Options() {
                         </div>
                       )}
                     </div>
-                    {analysis.upcomingEarnings && (
-                      <Badge variant="outline" className="flex items-center gap-1">
-                        <Calendar className="h-3 w-3" />
-                        Earnings in {analysis.upcomingEarnings.daysUntil} days
-                      </Badge>
-                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {analysis.upcomingEarnings && (
+                        <Badge variant="outline" className="flex items-center gap-1">
+                          <Calendar className="h-3 w-3" />
+                          Earnings in {analysis.upcomingEarnings.daysUntil} days
+                        </Badge>
+                      )}
+                      {analysis.upcomingEarnings && analysis.upcomingEarnings.daysUntil <= 21 && (
+                        <Badge
+                          variant="secondary"
+                          className="border border-yellow-300 bg-yellow-500/10 text-yellow-700"
+                        >
+                          Elevated earnings risk (≤ 21 days)
+                        </Badge>
+                      )}
+                      {selectedTrade?.hasEarningsRisk && (
+                        <Badge className="bg-red-600 text-white">Selected trade has earnings risk</Badge>
+                      )}
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -271,6 +293,15 @@ export default function Options() {
               </CardContent>
             </Card>
           )}
+        </TabsContent>
+
+        <TabsContent value="ideas" className="mt-0 space-y-6">
+          <TopTradeIdeasTab
+            onAnalyzeSymbol={(symbol) => {
+              handleTickerSelect(symbol);
+              setActiveTab("analysis");
+            }}
+          />
         </TabsContent>
 
         <TabsContent value="framework" className="mt-0">

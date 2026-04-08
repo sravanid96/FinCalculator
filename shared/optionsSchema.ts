@@ -239,6 +239,20 @@ export interface TickerAnalysis {
   frameworkAnalysis?: FrameworkAnalysis;
 }
 
+// Aggregated (multi-ticker) trade ideas for the "most active" list
+export interface TopOptionTradeIdea {
+  symbol: string;
+  name: string;
+  price: number;
+  changePercent: number;
+  volume: number;
+  updatedAt: string; // ISO timestamp
+  idea: TradeIdea;
+  score: number; // 0-100
+  liquidityScore: number; // 0-100 (heuristic from volume/OI)
+  reasons: string[];
+}
+
 // API request/response schemas for validation
 export const tickerParamSchema = z.object({
   ticker: z.string().min(1).max(10).toUpperCase(),

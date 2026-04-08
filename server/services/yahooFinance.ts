@@ -15,6 +15,7 @@ type YFQuote = any;
 type YFChart = any;
 type YFOptions = any;
 type YFSearch = any;
+type YFScreener = any;
 
 // Cache for API responses
 const cache = new Map<string, { data: any; timestamp: number }>();
@@ -169,6 +170,80 @@ export async function getOptionsChain(symbol: string): Promise<OptionsChain> {
   }
 }
 
+function toExpirationDateString(expDate: any): string {
+  return expDate instanceof Date
+    ? expDate.toISOString().split("T")[0]
+    : new Date(expDate * 1000).toISOString().split("T")[0];
+}
+
+function daysUntil(expirationDate: string): number {
+  return Math.ceil((new Date(expirationDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+}
+
+export async function getOptionsChainTargeted(
+  symbol: string,
+  targetDTE: number = 45,
+  extraExpirations: number = 1
+): Promise<OptionsChain> {
+  const cacheKey = `optionsTargeted:${symbol}:${targetDTE}:${extraExpirations}`;
+  const cached = getCached<OptionsChain>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const optionsSummary: any = await yahooFinance.options(symbol);
+    const quote = await getStockQuote(symbol);
+    const underlyingPrice = quote.price;
+
+    const rawDates: any[] = optionsSummary.expirationDates || [];
+    if (!rawDates.length) {
+      const empty: OptionsChain = { symbol, underlyingPrice, expirations: [] };
+      setCache(cacheKey, empty);
+      return empty;
+    }
+
+    const scored = rawDates
+      .map((d) => {
+        const exp = toExpirationDateString(d);
+        const dte = daysUntil(exp);
+        return { d, exp, dte, diff: Math.abs(dte - targetDTE) };
+      })
+      .sort((a, b) => a.diff - b.diff);
+
+    const picks = scored.slice(0, Math.max(1, 1 + extraExpirations));
+    const expirations: OptionsExpiration[] = [];
+
+    for (const pick of picks) {
+      try {
+        const chainData: any = await yahooFinance.options(symbol, { date: pick.d });
+        const calls: OptionContract[] =
+          chainData.options?.[0]?.calls?.map((c: any) =>
+            mapOptionContract(c, "call", pick.exp, pick.dte, underlyingPrice)
+          ) || [];
+        const puts: OptionContract[] =
+          chainData.options?.[0]?.puts?.map((p: any) =>
+            mapOptionContract(p, "put", pick.exp, pick.dte, underlyingPrice)
+          ) || [];
+
+        expirations.push({
+          expirationDate: pick.exp,
+          daysToExpiration: pick.dte,
+          calls,
+          puts,
+        });
+      } catch (err) {
+        console.warn(`Failed to fetch targeted options for ${symbol} exp ${pick.exp}`);
+      }
+    }
+
+    const result: OptionsChain = { symbol, underlyingPrice, expirations };
+    setCache(cacheKey, result);
+    return result;
+  } catch (error) {
+    console.error(`Error fetching targeted options chain for ${symbol}:`, error);
+    throw new Error(`Failed to fetch options chain for ${symbol}`);
+  }
+}
+
 function mapOptionContract(
   option: any,
   type: "call" | "put",
@@ -275,6 +350,37 @@ export async function searchTickers(query: string): Promise<{ symbol: string; na
     return quotes;
   } catch (error) {
     console.error(`Error searching tickers for "${query}":`, error);
+    return [];
+  }
+}
+
+export async function getMostActiveTickers(
+  limit: number = 50
+): Promise<{ symbol: string; name: string; volume?: number; changePercent?: number; price?: number }[]> {
+  const cacheKey = `screener:most_actives:${limit}`;
+  const cached = getCached<
+    { symbol: string; name: string; volume?: number; changePercent?: number; price?: number }[]
+  >(cacheKey, CACHE_TTL);
+  if (cached) return cached;
+
+  try {
+    const result: YFScreener = await (yahooFinance as any).screener("most_actives", { count: limit });
+    const quotes =
+      result?.quotes
+        ?.filter((q: any) => q?.quoteType === "EQUITY" && q?.symbol)
+        .slice(0, limit)
+        .map((q: any) => ({
+          symbol: String(q.symbol),
+          name: q.shortName || q.longName || String(q.symbol),
+          volume: q.regularMarketVolume,
+          changePercent: q.regularMarketChangePercent,
+          price: q.regularMarketPrice,
+        })) || [];
+
+    setCache(cacheKey, quotes);
+    return quotes;
+  } catch (error) {
+    console.error("Error fetching most active tickers:", error);
     return [];
   }
 }
