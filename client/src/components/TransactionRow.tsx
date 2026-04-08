@@ -29,8 +29,8 @@ export function TransactionRow({
   onEdit,
   onCategoryChange,
   onDelete,
-}: TransactionRowProps) {
-  const amount = parseFloat(transaction.amount);
+}: Readonly<TransactionRowProps>) {
+  const amount = Number.parseFloat(transaction.amount);
   const isIncome = transaction.isIncome || amount > 0;
 
   return (
@@ -63,7 +63,10 @@ export function TransactionRow({
           <Badge
             variant="secondary"
             className="hidden sm:flex"
-            style={{ backgroundColor: `${category.color}20`, color: category.color }}
+            style={{
+              backgroundColor: `${category.color ?? "#64748b"}20`,
+              color: category.color ?? undefined,
+            }}
           >
             {category.name}
           </Badge>

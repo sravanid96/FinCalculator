@@ -57,7 +57,7 @@ export async function register(req: Request, res: Response) {
     // Generate token
     const token = generateToken({
       id: user.id,
-      email: user.email,
+      email: user.email ?? "",
       firstName: user.firstName || undefined,
       lastName: user.lastName || undefined,
     });
@@ -113,7 +113,7 @@ export async function login(req: Request, res: Response) {
     // Generate token
     const token = generateToken({
       id: user.id,
-      email: user.email,
+      email: user.email ?? "",
       firstName: user.firstName || undefined,
       lastName: user.lastName || undefined,
     });

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: fincal
+    env: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      # Add secrets in Render dashboard (do NOT commit):
+      # - DATABASE_URL
+      # - JWT_SECRET
+      # - SESSION_SECRET
+      # - PLAID_CLIENT_ID / PLAID_SECRET / PLAID_ENV (optional)
+

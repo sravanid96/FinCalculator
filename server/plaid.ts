@@ -116,7 +116,7 @@ export async function exchangePublicToken(publicToken: string, userId: string): 
       access_token: accessToken,
     });
 
-    const accounts = accountsResponse.data.accounts.map((acc) => ({
+    const accounts = accountsResponse.data.accounts.map((acc: any) => ({
       accountId: acc.account_id,
       name: acc.name,
       type: acc.type,
@@ -171,11 +171,11 @@ export async function syncTransactions(
 
     // Get or find the account
     const accounts = await storage.getAccounts(userId);
-    let account = accounts.find((a) => a.plaidAccountId === accountId);
+    let account = accounts.find((a: any) => a.plaidAccountId === accountId);
 
     if (!account) {
       // Account should have been created during link, but just in case
-      const plaidAccount = transactionsResponse.data.accounts.find((a) => a.account_id === accountId);
+      const plaidAccount = transactionsResponse.data.accounts.find((a: any) => a.account_id === accountId);
       if (!plaidAccount) {
         throw new Error("Account not found");
       }
@@ -195,7 +195,7 @@ export async function syncTransactions(
     }
 
     // Create transactions
-    const transactionsToCreate = transactions.map((tx) => {
+    const transactionsToCreate = transactions.map((tx: any) => {
       const amount = Math.abs(tx.amount);
       const isIncome = tx.amount < 0; // Plaid uses negative for income
 
@@ -225,20 +225,20 @@ export async function syncTransactions(
     const existingTransactions = await storage.getTransactions(userId, {});
     const existingPlaidIds = new Set(
       existingTransactions.transactions
-        .filter((t) => t.plaidTransactionId)
-        .map((t) => t.plaidTransactionId!)
+        .filter((t: any) => t.plaidTransactionId)
+        .map((t: any) => t.plaidTransactionId!)
     );
 
-    const newTransactions = transactionsToCreate.filter(
-      (t) => !t.plaidTransactionId || !existingPlaidIds.has(t.plaidTransactionId)
-    );
+    const newTransactions = transactionsToCreate.filter((t: any) => {
+      return !t.plaidTransactionId || !existingPlaidIds.has(t.plaidTransactionId);
+    });
 
     if (newTransactions.length > 0) {
       await storage.createTransactions(newTransactions);
     }
 
     // Update account balance
-    const plaidAccount = transactionsResponse.data.accounts.find((a) => a.account_id === accountId);
+    const plaidAccount = transactionsResponse.data.accounts.find((a: any) => a.account_id === accountId);
     if (plaidAccount) {
       await storage.updateAccount(account!.id, {
         currentBalance: String(plaidAccount.balances.current || 0),

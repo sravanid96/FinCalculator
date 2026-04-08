@@ -62,7 +62,7 @@ export function CategoryBadge({
   size = "default",
   showIcon = true,
   className,
-}: CategoryBadgeProps) {
+}: Readonly<CategoryBadgeProps>) {
   const Icon = category.icon ? iconMap[category.icon] || Tag : Tag;
 
   const sizeClasses = {
@@ -80,9 +80,9 @@ export function CategoryBadge({
         className
       )}
       style={{
-        backgroundColor: `${category.color}20`,
-        color: category.color,
-        borderColor: `${category.color}40`,
+        backgroundColor: `${category.color ?? "#64748b"}20`,
+        color: category.color ?? undefined,
+        borderColor: `${category.color ?? "#64748b"}40`,
       }}
     >
       {showIcon && <Icon className="h-3.5 w-3.5" />}
