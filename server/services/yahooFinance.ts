@@ -1,4 +1,4 @@
-import YahooFinance from "yahoo-finance2";
+import * as YahooFinanceNS from "yahoo-finance2";
 import type {
   StockQuote,
   PriceDataPoint,
@@ -7,8 +7,9 @@ import type {
   OptionContract,
 } from "../../shared/optionsSchema";
 
-// Initialize Yahoo Finance client
-const yahooFinance = new YahooFinance();
+const YahooFinanceCtor: any =
+  (YahooFinanceNS as any).default?.default ?? (YahooFinanceNS as any).default ?? YahooFinanceNS;
+const yahooFinance: any = new YahooFinanceCtor();
 
 // Yahoo Finance returns complex types, we use any to simplify
 type YFQuote = any;

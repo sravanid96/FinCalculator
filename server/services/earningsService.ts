@@ -84,9 +84,10 @@ async function fetchFromAPINinjas(symbol: string): Promise<EarningsEvent | null>
 // Fallback: Fetch earnings from Yahoo Finance
 async function fetchFromYahoo(symbol: string): Promise<EarningsEvent | null> {
   try {
-    // Dynamic import to avoid circular dependency
-    const YahooFinance = (await import("yahoo-finance2")).default;
-    const yf = new YahooFinance();
+    // Import locally to avoid coupling with the dedicated yahooFinance service module
+    const mod: any = await import("yahoo-finance2");
+    const YahooFinanceCtor: any = mod?.default?.default ?? mod?.default ?? mod;
+    const yf: any = new YahooFinanceCtor();
     
     // Try to get earnings calendar from quote summary
     const quoteSummary: any = await yf.quoteSummary(symbol, {
