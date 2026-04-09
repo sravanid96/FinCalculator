@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Wallet, Mail, Lock, AlertCircle } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { resolveApiUrl } from "@/lib/queryClient";
 
 export default function Login() {
   const [, setLocation] = useLocation();
@@ -67,10 +68,11 @@ export default function Login() {
         ? { email, password }
         : { email, password, firstName, lastName };
 
-      const response = await fetch(url, {
+      const response = await fetch(resolveApiUrl(url), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
+        cache: "no-store",
         body: JSON.stringify(body),
       });
 

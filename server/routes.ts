@@ -17,6 +17,7 @@ import multer from "multer";
 import { parse } from "csv-parse/sync";
 import { eq } from "drizzle-orm";
 import optionsRoutes from "./optionsRoutes";
+import optionsWatchlistRoutes from "./optionsWatchlistRoutes";
 import healthRoutes from "./healthRoutes";
 // pdf-parse will be loaded dynamically
 
@@ -80,7 +81,8 @@ function defaultFinanceDataSource(): "local" | "cloud" {
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   await setupAuth(app);
 
-  // Register options trading routes (public, no auth required for market data)
+  // Watchlist must mount before /api/options so /api/options/watchlist is not swallowed by the options router
+  app.use("/api/options/watchlist", isAuthenticated, optionsWatchlistRoutes);
   app.use("/api/options", optionsRoutes);
 
   // Register health routes (auth required, local DB only)
@@ -108,6 +110,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Auth routes - Get current user
   app.get("/api/auth/user", isAuthenticated, async (req: any, res) => {
     try {
+      res.setHeader("Cache-Control", "private, no-store, no-cache, must-revalidate");
       const userId = req.user.claims?.sub || req.user.id;
       console.log("🔍 Fetching user with ID:", userId);
       console.log("🔍 Request user object:", JSON.stringify(req.user, null, 2));

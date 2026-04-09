@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Search,
   TrendingUp,
@@ -13,6 +13,7 @@ import {
   BookOpen,
   ClipboardList,
   Shield,
+  Bookmark,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -29,14 +30,31 @@ import { TradeLog } from "@/components/options/TradeLog";
 import { FrameworkTradeAnalyzer } from "@/components/options/FrameworkTradeAnalyzer";
 import { TechnicalIndicatorsChart } from "@/components/options/TechnicalIndicatorsChart";
 import { TopTradeIdeasTab } from "@/components/options/TopTradeIdeasTab";
+import { IdeaWatchlistTab, addIdeaToWatchlist } from "@/components/options/IdeaWatchlistTab";
+import { useToast } from "@/hooks/use-toast";
 import type { TickerAnalysis, TradeIdea } from "@shared/optionsSchema";
 
 export default function Options() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [selectedTicker, setSelectedTicker] = useState<string>("");
   const [selectedTrade, setSelectedTrade] = useState<TradeIdea | null>(null);
-  const [activeTab, setActiveTab] = useState<"analysis" | "ideas" | "framework" | "journal">(
-    "analysis"
-  );
+  const [activeTab, setActiveTab] = useState<
+    "analysis" | "ideas" | "watchlist" | "framework" | "journal"
+  >("analysis");
+
+  const addWatchMut = useMutation({
+    mutationFn: async (payload: { symbol: string; idea: TradeIdea }) =>
+      addIdeaToWatchlist(payload.symbol, payload.idea),
+    onSuccess: () => {
+      toast({ title: "Added to watchlist" });
+      queryClient.invalidateQueries({ queryKey: ["/api/options/watchlist"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/options/watchlist/stats"] });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Could not add", description: e.message, variant: "destructive" });
+    },
+  });
 
   const { data: analysis, isLoading, error } = useQuery<TickerAnalysis>({
     queryKey: ["/api/options/analysis", selectedTicker],
@@ -73,7 +91,7 @@ export default function Options() {
       </div>
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="space-y-6">
-        <TabsList className="grid w-full max-w-2xl grid-cols-4">
+        <TabsList className="grid w-full max-w-4xl grid-cols-5">
           <TabsTrigger value="analysis" className="gap-1.5">
             <BarChart3 className="h-4 w-4" />
             Analysis
@@ -81,6 +99,10 @@ export default function Options() {
           <TabsTrigger value="ideas" className="gap-1.5">
             <Shield className="h-4 w-4" />
             Ideas
+          </TabsTrigger>
+          <TabsTrigger value="watchlist" className="gap-1.5">
+            <Bookmark className="h-4 w-4" />
+            Watchlist
           </TabsTrigger>
           <TabsTrigger value="framework" className="gap-1.5">
             <BookOpen className="h-4 w-4" />
@@ -219,6 +241,13 @@ export default function Options() {
                                 idea={idea}
                                 selected={selectedTrade?.id === idea.id}
                                 onClick={() => handleTradeSelect(idea)}
+                                onAddToWatchlist={() =>
+                                  addWatchMut.mutate({
+                                    symbol: analysis.quote.symbol,
+                                    idea,
+                                  })
+                                }
+                                watchlistBusy={addWatchMut.isPending}
                               />
                             ))
                           ) : (
@@ -302,6 +331,10 @@ export default function Options() {
               setActiveTab("analysis");
             }}
           />
+        </TabsContent>
+
+        <TabsContent value="watchlist" className="mt-0 space-y-6">
+          <IdeaWatchlistTab />
         </TabsContent>
 
         <TabsContent value="framework" className="mt-0">

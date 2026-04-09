@@ -165,6 +165,34 @@ export const insertTradeJournalSchema = createInsertSchema(tradeJournal).omit({
 export type TradeJournalEntry = typeof tradeJournal.$inferSelect;
 export type InsertTradeJournal = z.infer<typeof insertTradeJournalSchema>;
 
+// Saved option trade ideas (watchlist) — backtest P/L at expiry vs underlying settlement
+export const optionsWatchlist = pgTable(
+  "options_watchlist",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    symbol: varchar("symbol").notNull(),
+    strategy: varchar("strategy").notNull(),
+    ideaJson: jsonb("idea_json").notNull(),
+    entryUnderlyingPrice: decimal("entry_underlying_price", { precision: 14, scale: 4 }).notNull(),
+    expirationDate: varchar("expiration_date").notNull(),
+    settledAt: timestamp("settled_at"),
+    settlementUnderlying: decimal("settlement_underlying", { precision: 14, scale: 4 }),
+    settlementPnl: decimal("settlement_pnl", { precision: 16, scale: 2 }),
+    outcome: varchar("outcome"),
+    /** When set, a trade journal row was created for this settlement (idempotent sync). */
+    tradeJournalEntryId: varchar("trade_journal_entry_id"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => [index("idx_options_watchlist_user").on(table.userId)]
+);
+
+export type OptionsWatchlistRow = typeof optionsWatchlist.$inferSelect;
+
 // Relations
 export const usersRelations = relations(users, ({ many, one }) => ({
   accounts: many(accounts),
@@ -172,10 +200,15 @@ export const usersRelations = relations(users, ({ many, one }) => ({
   categories: many(categories),
   preferences: one(userPreferences),
   tradeJournalEntries: many(tradeJournal),
+  optionsWatchlistEntries: many(optionsWatchlist),
 }));
 
 export const tradeJournalRelations = relations(tradeJournal, ({ one }) => ({
   user: one(users, { fields: [tradeJournal.userId], references: [users.id] }),
+}));
+
+export const optionsWatchlistRelations = relations(optionsWatchlist, ({ one }) => ({
+  user: one(users, { fields: [optionsWatchlist.userId], references: [users.id] }),
 }));
 
 export const accountsRelations = relations(accounts, ({ one, many }) => ({

@@ -76,13 +76,6 @@ function Router() {
     );
   }
 
-  // Check if we have a token but user is not loaded yet
-  const hasToken = typeof window !== "undefined" && localStorage.getItem("auth_token");
-  if (hasToken && !user && !isLoading) {
-    // Token exists but user query failed - might be invalid token
-    localStorage.removeItem("auth_token");
-  }
-
   return (
     <Switch>
       <Route path="/login" component={Login} />

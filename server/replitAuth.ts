@@ -44,7 +44,9 @@ export function getSession() {
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: true,
+      // Local dev is http://localhost; Secure cookies are not stored/sent and break session flows.
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
       maxAge: sessionTtl,
     },
   });

@@ -8,9 +8,11 @@ import {
   DollarSign,
   Percent,
   Clock,
+  ListPlus,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { TradeIdea } from "@shared/optionsSchema";
 
@@ -18,6 +20,8 @@ interface TradeIdeaCardProps {
   idea: TradeIdea;
   selected?: boolean;
   onClick?: () => void;
+  onAddToWatchlist?: () => void;
+  watchlistBusy?: boolean;
 }
 
 const recommendationConfig = {
@@ -43,7 +47,13 @@ const recommendationConfig = {
   },
 };
 
-export function TradeIdeaCard({ idea, selected, onClick }: TradeIdeaCardProps) {
+export function TradeIdeaCard({
+  idea,
+  selected,
+  onClick,
+  onAddToWatchlist,
+  watchlistBusy,
+}: TradeIdeaCardProps) {
   const rec = recommendationConfig[idea.recommendation];
   const RecIcon = rec.icon;
 
@@ -133,6 +143,23 @@ export function TradeIdeaCard({ idea, selected, onClick }: TradeIdeaCardProps) {
               </p>
             ))}
           </div>
+        )}
+
+        {onAddToWatchlist && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-3 w-full"
+            disabled={watchlistBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAddToWatchlist();
+            }}
+          >
+            <ListPlus className="mr-2 h-4 w-4" />
+            Add to watchlist
+          </Button>
         )}
       </CardContent>
     </Card>

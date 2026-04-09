@@ -1,6 +1,9 @@
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ArrowUpRight, Loader2, RefreshCcw, Shield } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { ArrowUpRight, Loader2, ListPlus, RefreshCcw, Shield } from "lucide-react";
+import { addIdeaToWatchlist } from "@/components/options/IdeaWatchlistTab";
+import { apiFetch } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import type { TopOptionTradeIdea } from "@shared/optionsSchema";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -17,11 +20,30 @@ export function TopTradeIdeasTab({
 }: Readonly<{
   onAnalyzeSymbol: (symbol: string) => void;
 }>) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  const addWatchMut = useMutation({
+    mutationFn: async (row: TopOptionTradeIdea) => addIdeaToWatchlist(row.symbol, row.idea),
+    onSuccess: () => {
+      toast({ title: "Added to watchlist" });
+      queryClient.invalidateQueries({ queryKey: ["/api/options/watchlist"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/options/watchlist/stats"] });
+    },
+    onError: (e: Error) => {
+      toast({
+        title: "Could not add",
+        description: e.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const { data, isLoading, error, refetch, isFetching } = useQuery<TopOptionTradeIdea[]>({
     queryKey: ["/api/options/top-ideas", 20],
     queryFn: async () => {
-      const res = await fetch(
-        `/api/options/top-ideas?limit=20&universe=120&minPop=55&minLiq=15&allowEarnings=true`
+      const res = await apiFetch(
+        `/api/options/top-ideas?limit=20&universe=120&minPop=55&minLiq=15&allowEarnings=true`,
       );
       const contentType = res.headers.get("content-type") || "";
       if (!res.ok) throw new Error("Failed to fetch top ideas");
@@ -169,8 +191,19 @@ export function TopTradeIdeasTab({
                         {fmtPct(row.changePercent)}
                       </TableCell>
                       <TableCell className="text-right">
-                        <div className="flex justify-end gap-2">
+                        <div className="flex flex-wrap justify-end gap-2">
                           <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            disabled={addWatchMut.isPending}
+                            onClick={() => addWatchMut.mutate(row)}
+                          >
+                            <ListPlus className="mr-1 h-3.5 w-3.5" />
+                            Watchlist
+                          </Button>
+                          <Button
+                            type="button"
                             variant="outline"
                             size="sm"
                             onClick={() => onAnalyzeSymbol(row.symbol)}
