@@ -4,14 +4,20 @@ import { config } from "dotenv";
 // Load .env file
 config();
 
-// Support both LOCAL_DATABASE_URL (for local dev) and DATABASE_URL (for cloud)
-const databaseUrl = process.env.LOCAL_DATABASE_URL || process.env.DATABASE_URL;
+// Match server/db.ts: production / Render must use DATABASE_URL (Neon), not a leftover LOCAL_DATABASE_URL in .env.
+const isCloudDeploy =
+  process.env.NODE_ENV === "production" || process.env.RENDER === "true";
+
+const databaseUrl = (
+  isCloudDeploy
+    ? process.env.DATABASE_URL?.trim() || process.env.LOCAL_DATABASE_URL?.trim()
+    : process.env.LOCAL_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim()
+) ?? "";
 
 if (!databaseUrl) {
   throw new Error(
-    "Either DATABASE_URL or LOCAL_DATABASE_URL must be set.\n" +
-    "For local development: LOCAL_DATABASE_URL=postgresql://user:password@localhost:5432/fincal\n" +
-    "For cloud database: DATABASE_URL=your_cloud_postgresql_connection_string"
+    "Set DATABASE_URL for cloud (Render/Neon), or LOCAL_DATABASE_URL for local Postgres.\n" +
+    "On Render, `npm run db:push` (e.g. pre-deploy) uses DATABASE_URL from the dashboard."
   );
 }
 

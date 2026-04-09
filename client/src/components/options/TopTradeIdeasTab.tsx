@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpRight, Loader2, ListPlus, RefreshCcw, Shield } from "lucide-react";
 import { addIdeaToWatchlist } from "@/components/options/IdeaWatchlistTab";
-import { apiFetch } from "@/lib/queryClient";
+import { fetchApi } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { TopOptionTradeIdea } from "@shared/optionsSchema";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,7 +28,6 @@ export function TopTradeIdeasTab({
     onSuccess: () => {
       toast({ title: "Added to watchlist" });
       queryClient.invalidateQueries({ queryKey: ["/api/options/watchlist"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/options/watchlist/stats"] });
     },
     onError: (e: Error) => {
       toast({
@@ -42,7 +41,7 @@ export function TopTradeIdeasTab({
   const { data, isLoading, error, refetch, isFetching } = useQuery<TopOptionTradeIdea[]>({
     queryKey: ["/api/options/top-ideas", 20],
     queryFn: async () => {
-      const res = await apiFetch(
+      const res = await fetchApi(
         `/api/options/top-ideas?limit=20&universe=120&minPop=55&minLiq=15&allowEarnings=true`,
       );
       const contentType = res.headers.get("content-type") || "";

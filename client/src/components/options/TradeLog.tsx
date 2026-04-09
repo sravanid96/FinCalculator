@@ -243,8 +243,8 @@ export function TradeLog() {
   if (error) {
     return (
       <Card className="border-destructive">
-        <CardContent className="pt-6 text-sm text-destructive">
-          Could not load trade journal. Sign in and ensure the database is migrated (trade_journal table).
+        <CardContent className="whitespace-pre-wrap break-words pt-6 text-sm text-destructive">
+          {error instanceof Error ? error.message : String(error)}
         </CardContent>
       </Card>
     );

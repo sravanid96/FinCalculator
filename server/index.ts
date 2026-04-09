@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import "express-async-errors";
+import { extractPgMeta } from "./pgErrors";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -65,12 +66,22 @@ app.use((req, res, next) => {
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
+    const { code, message: pgDetail } = extractPgMeta(err);
+    let status = Number(err.status || err.statusCode) || 500;
+    if (!Number.isFinite(status) || status < 400) status = 500;
+
+    let message = err.message || "Internal Server Error";
+    if (code === "42P01") {
+      status = 503;
+      message =
+        "Database schema is out of date (a table is missing). On the machine that can reach this DB, run: npm run db:push — with DATABASE_URL set to the same connection string the app uses.";
+    }
 
     console.error("[express]", err);
     if (!res.headersSent) {
-      res.status(status).json({ message });
+      const body: { message: string; detail?: string } = { message };
+      if (code === "42P01" && pgDetail) body.detail = pgDetail.slice(0, 500);
+      res.status(status).json(body);
     }
   });
 

@@ -2867,16 +2867,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get("/api/trade-journal", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = getUserId(req);
-      if (!userId) return res.status(401).json({ message: "Unauthorized" });
-      const entries = await storage.getTradeJournalEntries(userId);
-      const stats = tradeJournalStats(entries);
-      res.json({ entries, stats });
-    } catch (error) {
-      console.error("Error fetching trade journal:", error);
-      res.status(500).json({ message: "Failed to fetch trade journal" });
-    }
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+    const entries = await storage.getTradeJournalEntries(userId);
+    const stats = tradeJournalStats(entries);
+    res.json({ entries, stats });
   });
 
   app.post("/api/trade-journal", isAuthenticated, async (req: any, res) => {

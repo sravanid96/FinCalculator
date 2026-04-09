@@ -49,7 +49,6 @@ export default function Options() {
     onSuccess: () => {
       toast({ title: "Added to watchlist" });
       queryClient.invalidateQueries({ queryKey: ["/api/options/watchlist"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/options/watchlist/stats"] });
     },
     onError: (e: Error) => {
       toast({ title: "Could not add", description: e.message, variant: "destructive" });

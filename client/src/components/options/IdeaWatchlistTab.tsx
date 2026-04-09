@@ -55,21 +55,23 @@ export function IdeaWatchlistTab() {
   const [simPrice, setSimPrice] = useState<Record<string, string>>({});
   const [settlePrice, setSettlePrice] = useState<Record<string, string>>({});
 
-  const { data: stats, isLoading: statsLoading } = useQuery<WatchlistStats>({
-    queryKey: ["/api/options/watchlist/stats"],
+  const {
+    data: watchData,
+    isLoading: watchLoading,
+    error: watchError,
+  } = useQuery<{ stats: WatchlistStats; list: { items: OptionsWatchlistRow[] } }>({
+    queryKey: ["/api/options/watchlist", "bundle"],
     queryFn: async () => {
-      const res = await apiRequest("GET", "/api/options/watchlist/stats");
-      return res.json();
+      const [statsRes, listRes] = await Promise.all([
+        apiRequest("GET", "/api/options/watchlist/stats"),
+        apiRequest("GET", "/api/options/watchlist"),
+      ]);
+      const [stats, list] = await Promise.all([statsRes.json(), listRes.json()]);
+      return { stats, list };
     },
   });
-
-  const { data: listData, isLoading: listLoading } = useQuery<{ items: OptionsWatchlistRow[] }>({
-    queryKey: ["/api/options/watchlist"],
-    queryFn: async () => {
-      const res = await apiRequest("GET", "/api/options/watchlist");
-      return res.json();
-    },
-  });
+  const stats = watchData?.stats;
+  const listData = watchData?.list;
 
   const autoSettleMut = useMutation({
     mutationFn: async () => {
@@ -88,13 +90,12 @@ export function IdeaWatchlistTab() {
         });
       }
       qc.invalidateQueries({ queryKey: ["/api/options/watchlist"] });
-      qc.invalidateQueries({ queryKey: ["/api/options/watchlist/stats"] });
       qc.invalidateQueries({ queryKey: ["/api/trade-journal"] });
     },
   });
 
   useEffect(() => {
-    if (listLoading || !listData || autoSettleOnce.current) return;
+    if (watchLoading || !listData || autoSettleOnce.current) return;
     const today = new Date().toISOString().slice(0, 10);
     const needsAuto = listData.items.some(
       (r) => r.settlementPnl == null && r.expirationDate < today
@@ -102,7 +103,7 @@ export function IdeaWatchlistTab() {
     autoSettleOnce.current = true;
     if (!needsAuto) return;
     autoSettleMut.mutate();
-  }, [listLoading, listData]);
+  }, [watchLoading, listData]);
 
   const settleMut = useMutation({
     mutationFn: async ({ id, underlyingPrice }: { id: string; underlyingPrice?: number }) => {
@@ -117,7 +118,6 @@ export function IdeaWatchlistTab() {
         description: `P/L $${Number(data.settlementPnl).toFixed(2)} (${data.outcome})`,
       });
       qc.invalidateQueries({ queryKey: ["/api/options/watchlist"] });
-      qc.invalidateQueries({ queryKey: ["/api/options/watchlist/stats"] });
       qc.invalidateQueries({ queryKey: ["/api/trade-journal"] });
     },
     onError: (e: Error) => {
@@ -153,12 +153,21 @@ export function IdeaWatchlistTab() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/options/watchlist"] });
-      qc.invalidateQueries({ queryKey: ["/api/options/watchlist/stats"] });
       toast({ title: "Removed from watchlist" });
     },
   });
 
   const items = listData?.items ?? [];
+
+  if (watchError) {
+    return (
+      <Card className="border-destructive">
+        <CardContent className="whitespace-pre-wrap break-words pt-6 text-sm text-destructive">
+          {watchError instanceof Error ? watchError.message : String(watchError)}
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -168,7 +177,7 @@ export function IdeaWatchlistTab() {
             <CardTitle className="text-sm font-medium text-muted-foreground">Open ideas</CardTitle>
           </CardHeader>
           <CardContent>
-            {statsLoading ? (
+            {watchLoading ? (
               <Loader2 className="h-6 w-6 animate-spin" />
             ) : (
               <p className="text-2xl font-bold">{stats?.openCount ?? 0}</p>
@@ -180,7 +189,7 @@ export function IdeaWatchlistTab() {
             <CardTitle className="text-sm font-medium text-muted-foreground">Settled (backtest)</CardTitle>
           </CardHeader>
           <CardContent>
-            {statsLoading ? (
+            {watchLoading ? (
               <Loader2 className="h-6 w-6 animate-spin" />
             ) : (
               <p className="text-2xl font-bold">{stats?.settledCount ?? 0}</p>
@@ -192,7 +201,7 @@ export function IdeaWatchlistTab() {
             <CardTitle className="text-sm font-medium text-muted-foreground">Win rate</CardTitle>
           </CardHeader>
           <CardContent>
-            {statsLoading ? (
+            {watchLoading ? (
               <Loader2 className="h-6 w-6 animate-spin" />
             ) : (
               <p className="text-2xl font-bold">
@@ -209,7 +218,7 @@ export function IdeaWatchlistTab() {
             <CardTitle className="text-sm font-medium text-muted-foreground">Total settled P/L</CardTitle>
           </CardHeader>
           <CardContent>
-            {statsLoading ? (
+            {watchLoading ? (
               <Loader2 className="h-6 w-6 animate-spin" />
             ) : (
               <p
@@ -237,17 +246,17 @@ export function IdeaWatchlistTab() {
           </p>
         </CardHeader>
         <CardContent>
-          {listLoading && (
+          {watchLoading && (
             <div className="flex justify-center py-12">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>
           )}
-          {!listLoading && items.length === 0 && (
+          {!watchLoading && items.length === 0 && (
             <p className="py-8 text-center text-sm text-muted-foreground">
               No ideas yet. Add from Top ideas or Analysis → Trade ideas.
             </p>
           )}
-          {!listLoading && items.length > 0 && (
+          {!watchLoading && items.length > 0 && (
             <Table>
               <TableHeader>
                 <TableRow>
