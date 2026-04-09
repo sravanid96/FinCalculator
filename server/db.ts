@@ -5,19 +5,37 @@ import * as schema from "@shared/schema";
 const { Pool } = pg;
 
 /**
- * Local-first: when LOCAL_DATABASE_URL is set, the app and `npm run db:push` use that Postgres.
- * Otherwise falls back to DATABASE_URL (e.g. Neon for deploy / mobile).
- * Keep this in sync with drizzle.config.ts.
+ * Local dev: prefer LOCAL_DATABASE_URL, else DATABASE_URL.
+ * Production / Render: prefer DATABASE_URL so a copied .env with LOCAL_DATABASE_URL
+ * does not point the live app at localhost.
  */
-export const databaseConnectionUrl =
-  (process.env.LOCAL_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim()) ?? "";
+const isCloudDeploy =
+  process.env.NODE_ENV === "production" || process.env.RENDER === "true";
+
+export const databaseConnectionUrl = (
+  isCloudDeploy
+    ? process.env.DATABASE_URL?.trim() || process.env.LOCAL_DATABASE_URL?.trim()
+    : process.env.LOCAL_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim()
+) ?? "";
 
 if (!databaseConnectionUrl) {
   throw new Error(
     "Set LOCAL_DATABASE_URL for local Postgres, or DATABASE_URL for cloud.\n" +
-    "Example: LOCAL_DATABASE_URL=postgresql://user:password@localhost:5432/fincal"
+    "On Render use DATABASE_URL (Neon). Do not set LOCAL_DATABASE_URL unless you intend it."
   );
 }
 
-export const pool = new Pool({ connectionString: databaseConnectionUrl });
+const isLocalTcp =
+  /(^|@)localhost(\/|:|$)/i.test(databaseConnectionUrl) ||
+  /(^|@)127\.0\.0\.1(\/|:|$)/i.test(databaseConnectionUrl);
+
+/** Neon / remote hosts: enable TLS (Neon URLs usually include sslmode=require; this covers edge cases). */
+const poolConfig: pg.PoolConfig = {
+  connectionString: databaseConnectionUrl,
+  ...(!isLocalTcp && !/sslmode=disable/i.test(databaseConnectionUrl)
+    ? { ssl: { rejectUnauthorized: false } }
+    : {}),
+};
+
+export const pool = new Pool(poolConfig);
 export const db = drizzle(pool, { schema });

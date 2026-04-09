@@ -31,6 +31,12 @@ import { eq, and, desc, gte, lte, sql, ilike, or } from "drizzle-orm";
 export interface IStorage {
   // User operations
   getUser(id: string): Promise<User | undefined>;
+  createRegisteredUser(data: {
+    email: string;
+    passwordHash: string;
+    firstName: string | null;
+    lastName: string | null;
+  }): Promise<User>;
   upsertUser(user: UpsertUser): Promise<User>;
   deleteUser(id: string): Promise<void>;
 
@@ -105,7 +111,34 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.email, email));
+    const normalized = email.trim().toLowerCase();
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(sql`lower(trim(${users.email})) = ${normalized}`);
+    return user;
+  }
+
+  /** Plain insert for email/password signup (avoid upsert-on-id quirks with server-generated UUIDs). */
+  async createRegisteredUser(data: {
+    email: string;
+    passwordHash: string;
+    firstName: string | null;
+    lastName: string | null;
+  }): Promise<User> {
+    const [user] = await db
+      .insert(users)
+      .values({
+        email: data.email.trim().toLowerCase(),
+        password: data.passwordHash,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        authProvider: "email",
+      })
+      .returning();
+    if (!user) {
+      throw new Error("INSERT users returned no row");
+    }
     return user;
   }
 

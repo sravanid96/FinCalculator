@@ -1,6 +1,7 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
+import { extractPgMeta } from "./pgErrors";
 import type { Express, Request, Response, NextFunction } from "express";
 import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
@@ -39,6 +40,41 @@ function generateToken(user: AuthUser): string {
   );
 }
 
+/** Passport's InternalOAuthError puts Google's body in oauthError.data; err.message alone is vague. */
+function formatGoogleOAuthPassportError(err: unknown): string {
+  if (err instanceof Error) {
+    const oauth = (err as Error & { oauthError?: { statusCode?: number; data?: unknown } })
+      .oauthError;
+    if (oauth?.data !== undefined) {
+      const dataStr =
+        typeof oauth.data === "string" ? oauth.data : JSON.stringify(oauth.data);
+      return `${err.message}: ${dataStr}`;
+    }
+    return err.message;
+  }
+  return String(err);
+}
+
+function formatGoogleOAuthFailureInfo(info: unknown, status?: number): string {
+  const parts: string[] = [];
+  if (status !== undefined) parts.push(`http=${status}`);
+  if (info == null) return parts.join(" ") || "unknown_failure";
+  if (typeof info === "string") {
+    parts.push(info);
+    return parts.join(" ");
+  }
+  if (typeof info === "object" && info !== null && "message" in info) {
+    parts.push(String((info as { message: unknown }).message));
+    return parts.join(" ");
+  }
+  try {
+    parts.push(JSON.stringify(info));
+  } catch {
+    parts.push("unserializable_info");
+  }
+  return parts.join(" ");
+}
+
 // Register new user with email/password
 export async function register(req: Request, res: Response) {
   try {
@@ -52,7 +88,7 @@ export async function register(req: Request, res: Response) {
       return res.status(400).json({ message: "Password must be at least 6 characters" });
     }
 
-    // Check if user already exists
+    // Check if user already exists (getUserByEmail is case-insensitive)
     const existingUser = await storage.getUserByEmail(email);
     if (existingUser) {
       return res.status(400).json({ message: "User with this email already exists" });
@@ -61,14 +97,12 @@ export async function register(req: Request, res: Response) {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user
-    const user = await storage.upsertUser({
+    const user = await storage.createRegisteredUser({
       email,
-      password: hashedPassword,
-      firstName: firstName || null,
-      lastName: lastName || null,
-      authProvider: "email",
-    } as any);
+      passwordHash: hashedPassword,
+      firstName: firstName?.trim() || null,
+      lastName: lastName?.trim() || null,
+    });
 
     // Generate token
     const token = generateToken({
@@ -95,9 +129,34 @@ export async function register(req: Request, res: Response) {
       },
       token,
     });
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("Registration error:", error);
-    res.status(500).json({ message: "Failed to register user" });
+    const { code, message } = extractPgMeta(error);
+    if (code === "23505") {
+      return res.status(409).json({ message: "User with this email already exists" });
+    }
+    if (code === "42P01" || message.includes("does not exist")) {
+      return res.status(503).json({
+        message: "Database tables are missing. Run npm run db:push against DATABASE_URL.",
+        detail: message.slice(0, 400),
+      });
+    }
+    if (message.includes("gen_random_uuid")) {
+      return res.status(503).json({
+        message: "Database extension missing. In Postgres run: CREATE EXTENSION IF NOT EXISTS pgcrypto;",
+        detail: message.slice(0, 400),
+      });
+    }
+    if (code === "ENOTFOUND" || code === "ECONNREFUSED") {
+      return res.status(503).json({
+        message: "Cannot reach the database. On Render use DATABASE_URL (Neon), not LOCAL_DATABASE_URL.",
+        detail: message.slice(0, 400),
+      });
+    }
+    res.status(500).json({
+      message: "Failed to register user",
+      detail: message.slice(0, 400),
+    });
   }
 }
 
@@ -283,22 +342,25 @@ export function setupGoogleRoutes(app: Express) {
       passport.authenticate(
         "google",
         { session: false },
-        (err: unknown, user: false | AuthUser | null | undefined, info: unknown) => {
+        (
+          err: unknown,
+          user: false | AuthUser | null | undefined,
+          info: unknown,
+          status?: number,
+        ) => {
           if (err) {
-            const msg =
-              err instanceof Error
-                ? err.message
-                : typeof err === "string"
-                  ? err
-                  : "oauth_error";
+            const msg = formatGoogleOAuthPassportError(err);
             console.error("Google OAuth callback passport error:", err);
             return res.redirect(
-              `/login?error=auth_failed&detail=${encodeURIComponent(msg.slice(0, 240))}`,
+              `/login?error=auth_failed&detail=${encodeURIComponent(msg.slice(0, 500))}`,
             );
           }
           if (!user) {
-            console.warn("Google OAuth callback: no user", info);
-            return res.redirect("/login?error=auth_failed");
+            const detail = formatGoogleOAuthFailureInfo(info, status);
+            console.warn("Google OAuth callback: no user; info=", info, "status=", status);
+            return res.redirect(
+              `/login?error=auth_failed&detail=${encodeURIComponent(detail.slice(0, 500))}`,
+            );
           }
           (req as Request & { user: AuthUser }).user = user;
           next();
@@ -312,7 +374,9 @@ export function setupGoogleRoutes(app: Express) {
 
         if (!user?.id || !user.email) {
           console.error("❌ No user in Google OAuth callback");
-          return res.redirect("/login?error=auth_failed");
+          return res.redirect(
+            `/login?error=auth_failed&detail=${encodeURIComponent("missing_id_or_email_after_oauth")}`,
+          );
         }
 
         console.log("✅ Generating token for user:", user.id, user.email);
@@ -323,7 +387,10 @@ export function setupGoogleRoutes(app: Express) {
         res.redirect(`/login?token=${encodeURIComponent(token)}`);
       } catch (error) {
         console.error("❌ Google OAuth callback error:", error);
-        res.redirect("/login?error=auth_failed");
+        const detail = formatGoogleOAuthPassportError(error);
+        res.redirect(
+          `/login?error=auth_failed&detail=${encodeURIComponent(detail.slice(0, 500))}`,
+        );
       }
     },
   );

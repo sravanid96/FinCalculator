@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
+import { extractPgMeta } from "./pgErrors";
 import { setupAuth, isAuthenticated } from "./replitAuth";
 import {
   insertAccountSchema,
@@ -118,14 +119,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         console.error("❌ User not found in database for ID:", userId);
         return res.status(404).json({ message: "User not found" });
       }
-      
-      // Create default categories for new users
-      await storage.createDefaultCategories(userId);
+
+      try {
+        await storage.createDefaultCategories(userId);
+      } catch (catErr) {
+        console.error("createDefaultCategories failed (non-fatal):", catErr);
+      }
+
       console.log("✅ Returning user data");
       res.json(user);
     } catch (error) {
       console.error("Error fetching user:", error);
-      res.status(500).json({ message: "Failed to fetch user" });
+      const { message } = extractPgMeta(error);
+      res.status(500).json({
+        message: "Failed to fetch user",
+        detail: message.slice(0, 400),
+      });
     }
   });
 

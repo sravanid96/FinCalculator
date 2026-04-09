@@ -25,12 +25,20 @@ export function getSession() {
   const pgStore = connectPg(session);
   const sessionStore = new pgStore({
     conString: databaseConnectionUrl,
-    createTableIfMissing: false,
+    // Self-hosted / Render: create `sessions` if db:push was skipped (matches Drizzle `sessions` table).
+    createTableIfMissing: !process.env.REPL_ID,
     ttl: sessionTtl,
     tableName: "sessions",
   });
+  const secret =
+    process.env.SESSION_SECRET ||
+    process.env.JWT_SECRET ||
+    (process.env.NODE_ENV !== "production" ? "dev-session-secret-unsafe" : undefined);
+  if (!secret) {
+    throw new Error("Set SESSION_SECRET (or JWT_SECRET) in production for express-session.");
+  }
   return session({
-    secret: process.env.SESSION_SECRET!,
+    secret,
     store: sessionStore,
     resave: false,
     saveUninitialized: false,

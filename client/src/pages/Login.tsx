@@ -77,7 +77,8 @@ export default function Login() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.message || "Authentication failed");
+        const base = data.message || "Authentication failed";
+        throw new Error(data.detail ? `${base} (${data.detail})` : base);
       }
 
       // Store token if provided
