@@ -1,22 +1,26 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
-import type { Express, Request, Response } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 
 const JWT_SECRET = process.env.JWT_SECRET || process.env.SESSION_SECRET || "your-secret-key-change-in-production";
 
-/** OAuth callback must be a public HTTPS URL in production; localhost breaks mobile after Google redirects. */
-function getGoogleOAuthCallbackUrl(): string {
+/**
+ * Google OAuth redirect_uri must match byte-for-byte on authorize + token exchange.
+ * A relative path lets passport-oauth2 build the full URL from each request's Host +
+ * X-Forwarded-Proto (needs trust proxy on Render). That avoids 400 "Bad Request" when
+ * RENDER_EXTERNAL_URL / env URL ≠ the URL users actually open (www, custom domain, typo).
+ *
+ * Set GOOGLE_CALLBACK_URL only if you need a fixed absolute URL.
+ */
+const GOOGLE_OAUTH_CALLBACK_PATH = "/api/auth/google/callback";
+
+function googleStrategyCallbackUrl(): string {
   const explicit = process.env.GOOGLE_CALLBACK_URL?.trim();
   if (explicit) return explicit;
-  const render = process.env.RENDER_EXTERNAL_URL?.trim();
-  if (render) {
-    return `${render.replace(/\/$/, "")}/api/auth/google/callback`;
-  }
-  const port = process.env.PORT || "3002";
-  return `http://localhost:${port}/api/auth/google/callback`;
+  return GOOGLE_OAUTH_CALLBACK_PATH;
 }
 
 export interface AuthUser {
@@ -157,11 +161,28 @@ export async function login(req: Request, res: Response) {
 export function setupGoogleAuth(app: Express): boolean {
   const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
   const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-  const GOOGLE_CALLBACK_URL = getGoogleOAuthCallbackUrl();
+  const strategyCallbackUrl = googleStrategyCallbackUrl();
 
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
     console.warn("⚠️  Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable Google sign-in.");
     return false;
+  }
+
+  const explicitCallback = process.env.GOOGLE_CALLBACK_URL?.trim();
+  const isLocalExplicit =
+    explicitCallback &&
+    (explicitCallback.includes("localhost") || explicitCallback.includes("127.0.0.1"));
+  if (process.env.NODE_ENV === "production" && isLocalExplicit) {
+    console.error(
+      "GOOGLE_CALLBACK_URL points at localhost in production — phones will fail. " +
+        "Remove it to use per-request host, or set it to https://YOUR-SERVICE.onrender.com/api/auth/google/callback.",
+    );
+  }
+  if (!explicitCallback && process.env.NODE_ENV === "production") {
+    console.log(
+      "Google OAuth: using relative callback path; redirect_uri = https://<request-host>/api/auth/google/callback (trust proxy). " +
+        "Register that full URL in Google Cloud Console for each domain you use.",
+    );
   }
 
   // Ensure passport serialization is set up for Google auth
@@ -177,7 +198,8 @@ export function setupGoogleAuth(app: Express): boolean {
       {
         clientID: GOOGLE_CLIENT_ID,
         clientSecret: GOOGLE_CLIENT_SECRET,
-        callbackURL: GOOGLE_CALLBACK_URL,
+        callbackURL: strategyCallbackUrl,
+        proxy: true,
       },
       async (accessToken, refreshToken, profile, done) => {
         try {
@@ -243,9 +265,11 @@ export function setupGoogleRoutes(app: Express) {
   app.get(
     "/api/auth/google",
     (req, res, next) => {
-      // Log the callback URL being used for debugging
-      const callbackURL = getGoogleOAuthCallbackUrl();
-      console.log("🔐 Initiating Google OAuth with callback URL:", callbackURL);
+      const opt = googleStrategyCallbackUrl();
+      console.log(
+        "🔐 Initiating Google OAuth; callbackURL option:",
+        opt.startsWith("/") ? `${opt} (absolute redirect_uri built from request URL)` : opt,
+      );
       passport.authenticate("google", { 
         scope: ["profile", "email"]
       })(req, res, next);
@@ -254,35 +278,54 @@ export function setupGoogleRoutes(app: Express) {
 
   app.get(
     "/api/auth/google/callback",
-    passport.authenticate("google", { 
-      failureRedirect: "/login?error=auth_failed",
-      session: false
-    }),
-    async (req: any, res: Response) => {
+    (req: Request, res: Response, next: NextFunction) => {
+      // Passport sends token exchange / strategy failures via next(err) — without this, Express returns 500 JSON.
+      passport.authenticate(
+        "google",
+        { session: false },
+        (err: unknown, user: false | AuthUser | null | undefined, info: unknown) => {
+          if (err) {
+            const msg =
+              err instanceof Error
+                ? err.message
+                : typeof err === "string"
+                  ? err
+                  : "oauth_error";
+            console.error("Google OAuth callback passport error:", err);
+            return res.redirect(
+              `/login?error=auth_failed&detail=${encodeURIComponent(msg.slice(0, 240))}`,
+            );
+          }
+          if (!user) {
+            console.warn("Google OAuth callback: no user", info);
+            return res.redirect("/login?error=auth_failed");
+          }
+          (req as Request & { user: AuthUser }).user = user;
+          next();
+        },
+      )(req, res, next);
+    },
+    async (req: Request, res: Response) => {
       try {
-        console.log("🔐 Google OAuth callback - req.user:", JSON.stringify(req.user, null, 2));
-        
-        if (!req.user) {
+        const user = (req as Request & { user?: AuthUser }).user;
+        console.log("🔐 Google OAuth callback - req.user:", JSON.stringify(user, null, 2));
+
+        if (!user?.id || !user.email) {
           console.error("❌ No user in Google OAuth callback");
           return res.redirect("/login?error=auth_failed");
         }
 
-        const user = req.user as AuthUser;
         console.log("✅ Generating token for user:", user.id, user.email);
-        
+
         const token = generateToken(user);
         console.log("✅ Token generated, redirecting with token");
-        
-        // Don't use session login - we're using JWT tokens
-        // The token will be stored in localStorage on the client
-        
-        // Redirect to login page with token (client will store it and redirect)
-        res.redirect(`/login?token=${token}`);
+
+        res.redirect(`/login?token=${encodeURIComponent(token)}`);
       } catch (error) {
         console.error("❌ Google OAuth callback error:", error);
         res.redirect("/login?error=auth_failed");
       }
-    }
+    },
   );
 }
 

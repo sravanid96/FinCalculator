@@ -24,6 +24,7 @@ export default function Login() {
     const urlParams = new URLSearchParams(window.location.search);
     const token = urlParams.get("token");
     const error = urlParams.get("error");
+    const errorDetail = urlParams.get("detail");
     
     if (token) {
       localStorage.setItem("auth_token", token);
@@ -43,7 +44,10 @@ export default function Login() {
       if (error === "google_not_configured") {
         setError("Google sign-in is not configured. Please use email/password to sign in.");
       } else if (error === "auth_failed") {
-        setError("Google authentication failed. Please try again or use email/password.");
+        const hint = errorDetail ? ` (${errorDetail})` : "";
+        setError(
+          `Google authentication failed. Please try again or use email/password.${hint}`,
+        );
       } else {
         setError("Authentication error. Please try again.");
       }

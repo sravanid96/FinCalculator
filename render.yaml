@@ -16,7 +16,8 @@ services:
       # - JWT_SECRET
       # - SESSION_SECRET
       # - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (if using Google sign-in)
-      #   Optional: GOOGLE_CALLBACK_URL — defaults to RENDER_EXTERNAL_URL + /api/auth/google/callback
-      #   In Google Cloud Console, add that same URL under Authorized redirect URIs.
+      #   Optional: GOOGLE_CALLBACK_URL — omit it on Render; the app uses /api/auth/google/callback relative to the request host.
+      #   Do NOT set GOOGLE_CALLBACK_URL to localhost on Render. In Google Cloud, add each redirect URI you use, e.g.
+      #   https://YOUR-SERVICE.onrender.com/api/auth/google/callback (and custom domain if applicable).
       # - PLAID_CLIENT_ID / PLAID_SECRET / PLAID_ENV (optional)
 
