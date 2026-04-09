@@ -58,6 +58,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/EmptyState";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { FINANCE_API_SOURCE } from "@/lib/financeDataSource";
 import { formatCurrency, getRelativeTime } from "@/lib/formatters";
 import type { Account } from "@shared/schema";
 
@@ -91,7 +92,7 @@ export default function Accounts() {
   });
 
   const { data, isLoading } = useQuery<AccountsResponse>({
-    queryKey: ["/api/accounts", { source: "local" }],
+    queryKey: ["/api/accounts", { source: FINANCE_API_SOURCE }],
     queryFn: async ({ queryKey }) => {
       const params = new URLSearchParams();
       if (queryKey[1] && typeof queryKey[1] === 'object' && 'source' in queryKey[1]) {
@@ -332,8 +333,7 @@ export default function Accounts() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      // Add source=local parameter for local-only mode
-      await apiRequest("DELETE", `/api/accounts/${id}?source=local`);
+      await apiRequest("DELETE", `/api/accounts/${id}?source=${FINANCE_API_SOURCE}`);
     },
     onSuccess: async () => {
       // Invalidate and refetch all related queries

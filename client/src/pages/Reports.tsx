@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatCurrency, formatPercent } from "@/lib/formatters";
+import { FINANCE_API_SOURCE } from "@/lib/financeDataSource";
 import { TIME_PERIODS, type TimePeriod } from "@shared/schema";
 import {
   BarChart,
@@ -75,7 +76,7 @@ export default function Reports() {
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("last_6_months");
 
   const { data, isLoading } = useQuery<ReportData>({
-    queryKey: ["/api/reports", { period: timePeriod, source: "local" }],
+    queryKey: ["/api/reports", { period: timePeriod, source: FINANCE_API_SOURCE }],
     queryFn: async ({ queryKey }) => {
       const params = new URLSearchParams();
       if (queryKey[1] && typeof queryKey[1] === 'object' && 'period' in queryKey[1]) {

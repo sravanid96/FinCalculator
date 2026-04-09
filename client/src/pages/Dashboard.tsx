@@ -22,6 +22,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { TransactionRow, TransactionRowSkeleton } from "@/components/TransactionRow";
 import { EmptyState } from "@/components/EmptyState";
 import { formatCurrency } from "@/lib/formatters";
+import { FINANCE_API_SOURCE } from "@/lib/financeDataSource";
 import { TIME_PERIODS, type TimePeriod } from "@shared/schema";
 import {
   PieChart,
@@ -85,7 +86,7 @@ export default function Dashboard() {
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("current_month");
 
   const { data: analytics, isLoading: analyticsLoading } = useQuery<AnalyticsData>({
-    queryKey: ["/api/analytics", { period: timePeriod, source: "local" }],
+    queryKey: ["/api/analytics", { period: timePeriod, source: FINANCE_API_SOURCE }],
     queryFn: async ({ queryKey }) => {
       const params = new URLSearchParams();
       if (queryKey[1] && typeof queryKey[1] === 'object' && 'period' in queryKey[1]) {
@@ -109,7 +110,7 @@ export default function Dashboard() {
   });
 
   const { data: recentData, isLoading: transactionsLoading } = useQuery<RecentTransactionsData>({
-    queryKey: ["/api/transactions/recent", { source: "local" }],
+    queryKey: ["/api/transactions/recent", { source: FINANCE_API_SOURCE }],
     queryFn: async ({ queryKey }) => {
       const params = new URLSearchParams();
       if (queryKey[1] && typeof queryKey[1] === 'object' && 'source' in queryKey[1]) {
@@ -130,7 +131,7 @@ export default function Dashboard() {
   });
 
   const { data: accountsData } = useQuery<{ totalBalance: number; accountCount: number }>({
-    queryKey: ["/api/accounts/summary", { source: "local" }],
+    queryKey: ["/api/accounts/summary", { source: FINANCE_API_SOURCE }],
     queryFn: async ({ queryKey }) => {
       const params = new URLSearchParams();
       if (queryKey[1] && typeof queryKey[1] === 'object' && 'source' in queryKey[1]) {

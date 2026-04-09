@@ -72,6 +72,11 @@ function getDateRange(period: string): { start: Date; end: Date } {
   }
 }
 
+/** Default `source` when the client omits it: cloud on Render/Neon; local only if LOCAL_DATABASE_URL is set. */
+function defaultFinanceDataSource(): "local" | "cloud" {
+  return process.env.LOCAL_DATABASE_URL?.trim() ? "local" : "cloud";
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   await setupAuth(app);
 
@@ -162,7 +167,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       
       const { source } = req.query;
-      const dataSource = (source as string) || "local"; // Default to local for local-only mode
+      const dataSource = (source as string) || defaultFinanceDataSource();
       
       let allAccounts: any[] = [];
       
@@ -219,7 +224,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       
       const { source } = req.query;
-      const dataSource = (source as string) || "local"; // Default to local for local-only mode
+      const dataSource = (source as string) || defaultFinanceDataSource();
       
       let allAccounts: any[] = [];
       
@@ -340,7 +345,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const accountId = req.params.id;
       const { source } = req.query;
-      const dataSource = (source as string) || "local"; // Default to local for local-only mode
+      const dataSource = (source as string) || defaultFinanceDataSource();
 
       console.log(`🗑️  Deleting account ${accountId} from ${dataSource} database`);
 
@@ -539,8 +544,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const { startDate, endDate, categoryId, search, limit, offset, source } = req.query;
       
-      // source can be "cloud", "local", or "both" (default: "local" for local-only mode)
-      const dataSource = (source as string) || "local";
+      // source can be "cloud", "local", or "both"
+      const dataSource = (source as string) || defaultFinanceDataSource();
 
       console.log("📊 Fetching transactions for user:", userId, {
         startDate,
@@ -759,7 +764,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       
       const { source } = req.query;
-      const dataSource = (source as string) || "local"; // Default to local for local-only mode
+      const dataSource = (source as string) || defaultFinanceDataSource();
       
       let allTransactions: any[] = [];
       
@@ -857,7 +862,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const transactionId = req.params.id;
       const { source } = req.query;
-      const dataSource = (source as string) || "local"; // Default to local for local-only mode
+      const dataSource = (source as string) || defaultFinanceDataSource();
       const updates = req.body;
 
       console.log(`✏️  Updating transaction ${transactionId} in ${dataSource} database`);
@@ -1015,7 +1020,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const transactionId = req.params.id;
       const { source } = req.query;
-      const dataSource = (source as string) || "local"; // Default to local for local-only mode
+      const dataSource = (source as string) || defaultFinanceDataSource();
 
       console.log(`🗑️  Deleting transaction ${transactionId} from ${dataSource} database`);
 
@@ -2388,7 +2393,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const period = (req.query.period as string) || "current_month";
       const { source } = req.query;
-      const dataSource = (source as string) || "local"; // Default to local for local-only mode
+      const dataSource = (source as string) || defaultFinanceDataSource();
       const { start, end } = getDateRange(period);
 
       let allTransactions: any[] = [];
@@ -2583,7 +2588,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const period = (req.query.period as string) || "last_6_months";
       const { source } = req.query;
-      const dataSource = (source as string) || "local"; // Default to local for local-only mode
+      const dataSource = (source as string) || defaultFinanceDataSource();
       const { start, end } = getDateRange(period);
 
       // Use the same analytics logic as /api/analytics endpoint

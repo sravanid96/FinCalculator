@@ -28,6 +28,7 @@ import { TransactionRow, TransactionRowSkeleton } from "@/components/Transaction
 import { EmptyState } from "@/components/EmptyState";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { FINANCE_API_SOURCE } from "@/lib/financeDataSource";
 import type { Transaction, Category, Account } from "@shared/schema";
 
 interface TransactionsResponse {
@@ -112,8 +113,7 @@ export default function Transactions() {
       if (queryKey[2]) params.append("categoryId", queryKey[2] as string);
       if (queryKey[3]) params.append("startDate", queryKey[3] as string);
       if (queryKey[4]) params.append("endDate", queryKey[4] as string);
-      // Fetch from local database only for now (can be changed to "both" or "cloud")
-      params.append("source", "local");
+      params.append("source", FINANCE_API_SOURCE);
       
       const token = localStorage.getItem("auth_token");
       const headers: Record<string, string> = {};
@@ -141,8 +141,7 @@ export default function Transactions() {
 
   const updateMutation = useMutation({
     mutationFn: async (data: { id: string; updates: Partial<Transaction> }) => {
-      // Add source=local parameter for local-only mode
-      await apiRequest("PATCH", `/api/transactions/${data.id}?source=local`, data.updates);
+      await apiRequest("PATCH", `/api/transactions/${data.id}?source=${FINANCE_API_SOURCE}`, data.updates);
     },
     onSuccess: async () => {
       // Invalidate all related queries using predicate to match all variations
@@ -191,8 +190,7 @@ export default function Transactions() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      // Add source=local parameter for local-only mode
-      await apiRequest("DELETE", `/api/transactions/${id}?source=local`);
+      await apiRequest("DELETE", `/api/transactions/${id}?source=${FINANCE_API_SOURCE}`);
     },
     onSuccess: async () => {
       // Invalidate all related queries using predicate to match all variations

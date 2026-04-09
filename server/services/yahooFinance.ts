@@ -23,6 +23,48 @@ const cache = new Map<string, { data: any; timestamp: number }>();
 const CACHE_TTL = 60 * 1000; // 1 minute cache for real-time data
 const HISTORICAL_CACHE_TTL = 5 * 60 * 1000; // 5 minutes for historical
 
+/** When Yahoo screener/search fails (common from datacenter IPs), top-ideas still has a universe. */
+const FALLBACK_MOST_ACTIVES: { symbol: string; name: string }[] = [
+  { symbol: "NVDA", name: "NVIDIA Corporation" },
+  { symbol: "AAPL", name: "Apple Inc." },
+  { symbol: "MSFT", name: "Microsoft Corporation" },
+  { symbol: "AMZN", name: "Amazon.com Inc." },
+  { symbol: "META", name: "Meta Platforms Inc." },
+  { symbol: "GOOGL", name: "Alphabet Inc." },
+  { symbol: "TSLA", name: "Tesla Inc." },
+  { symbol: "AMD", name: "Advanced Micro Devices" },
+  { symbol: "AVGO", name: "Broadcom Inc." },
+  { symbol: "LLY", name: "Eli Lilly" },
+  { symbol: "JPM", name: "JPMorgan Chase" },
+  { symbol: "V", name: "Visa Inc." },
+  { symbol: "UNH", name: "UnitedHealth" },
+  { symbol: "XOM", name: "Exxon Mobil" },
+  { symbol: "MA", name: "Mastercard" },
+  { symbol: "COST", name: "Costco" },
+  { symbol: "HD", name: "Home Depot" },
+  { symbol: "PG", name: "Procter & Gamble" },
+  { symbol: "MRK", name: "Merck" },
+  { symbol: "ABBV", name: "AbbVie" },
+  { symbol: "PEP", name: "PepsiCo" },
+  { symbol: "KO", name: "Coca-Cola" },
+  { symbol: "BAC", name: "Bank of America" },
+  { symbol: "CRM", name: "Salesforce" },
+  { symbol: "NFLX", name: "Netflix" },
+  { symbol: "DIS", name: "Walt Disney" },
+  { symbol: "INTC", name: "Intel" },
+  { symbol: "CSCO", name: "Cisco" },
+  { symbol: "QCOM", name: "Qualcomm" },
+  { symbol: "SPY", name: "SPDR S&P 500 ETF" },
+];
+
+function tickerLikeFallback(query: string): { symbol: string; name: string }[] {
+  const q = query.trim().toUpperCase();
+  if (/^[A-Z][A-Z0-9.-]{0,14}$/.test(q)) {
+    return [{ symbol: q, name: q }];
+  }
+  return [];
+}
+
 function getCached<T>(key: string, ttl: number = CACHE_TTL): T | null {
   const cached = cache.get(key);
   if (cached && Date.now() - cached.timestamp < ttl) {
@@ -347,11 +389,18 @@ export async function searchTickers(query: string): Promise<{ symbol: string; na
           name: q.shortname || q.longname || q.symbol,
         })) || [];
 
-    setCache(cacheKey, quotes);
-    return quotes;
+    if (quotes.length > 0) {
+      setCache(cacheKey, quotes);
+      return quotes;
+    }
+    const fallback = tickerLikeFallback(query);
+    if (fallback.length) setCache(cacheKey, fallback);
+    return fallback;
   } catch (error) {
     console.error(`Error searching tickers for "${query}":`, error);
-    return [];
+    const fallback = tickerLikeFallback(query);
+    if (fallback.length) setCache(cacheKey, fallback);
+    return fallback;
   }
 }
 
@@ -378,10 +427,15 @@ export async function getMostActiveTickers(
           price: q.regularMarketPrice,
         })) || [];
 
-    setCache(cacheKey, quotes);
-    return quotes;
+    if (quotes.length > 0) {
+      setCache(cacheKey, quotes);
+      return quotes;
+    }
   } catch (error) {
     console.error("Error fetching most active tickers:", error);
-    return [];
   }
+
+  const fallback = FALLBACK_MOST_ACTIVES.slice(0, Math.min(limit, FALLBACK_MOST_ACTIVES.length));
+  setCache(cacheKey, fallback);
+  return fallback;
 }
