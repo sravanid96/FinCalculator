@@ -617,7 +617,8 @@ function IndicatorToggle({
         id={`toggle-${label}`}
         checked={checked}
         onCheckedChange={onChange}
-        className="h-4 w-7 data-[state=checked]:bg-primary"
+        // Use default switch sizing; shrinking width without adjusting thumb translate clips label text.
+        className="scale-75 origin-left data-[state=checked]:bg-primary"
       />
       <Label htmlFor={`toggle-${label}`} className="cursor-pointer text-xs font-normal">
         {label}

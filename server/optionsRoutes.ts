@@ -11,7 +11,7 @@ import { calculatePL } from "./services/optionsCalculator";
 import { calculateSupportResistance } from "./services/supportResistance";
 import { getUpcomingEarnings } from "./services/earningsService";
 import { generateTradeIdeas, generateStrategyComparison } from "./services/tradeIdeaGenerator";
-import { generateFrameworkAnalysis } from "./services/frameworkAnalysis";
+import { generateFrameworkAnalysis, calculateRSI } from "./services/frameworkAnalysis";
 import { plCalculationSchema, DEFAULT_TRADE_CONFIG } from "../shared/optionsSchema";
 import type { TickerAnalysis, TopOptionTradeIdea, TradeIdea, OptionsChain } from "../shared/optionsSchema";
 
@@ -93,6 +93,68 @@ function computeOverallScore(idea: TradeIdea, liquidityScore: number): number {
   return Math.round((pop * 0.55 + liq * 0.25 + rr * 0.1 + dteFit * 0.1) * 100);
 }
 
+async function getRSIWithFallback(symbol: string, primaryMonths: number, fallbackMonths: number): Promise<number | null> {
+  try {
+    const primary = await getHistoricalPrices(symbol, primaryMonths);
+    const primaryCloses = primary.map((p) => p.close);
+    const rsiPrimary = calculateRSI(primaryCloses, 14);
+    if (rsiPrimary !== null) return rsiPrimary;
+
+    const fallback = await getHistoricalPrices(symbol, fallbackMonths);
+    const fallbackCloses = fallback.map((p) => p.close);
+    return calculateRSI(fallbackCloses, 14);
+  } catch {
+    return null;
+  }
+}
+
+function buildRSIAnalysisForTopIdeas(
+  rsi: number,
+  strategy: TradeIdea["strategy"]
+): { value: number; zone: "overbought" | "oversold" | "neutral"; confidenceBoost: number; signal: string } {
+  const zone = rsi >= 70 ? "overbought" : rsi <= 30 ? "oversold" : "neutral";
+
+  // Keep consistent with tradeIdeaGenerator.ts behavior (simplified but aligned)
+  const bullish = new Set<TradeIdea["strategy"]>(["put_credit_spread", "long_call", "cash_secured_put", "covered_call"]);
+  const bearish = new Set<TradeIdea["strategy"]>(["call_credit_spread", "long_put"]);
+  const neutral = new Set<TradeIdea["strategy"]>(["iron_condor", "iron_butterfly", "straddle", "strangle"]);
+
+  let confidenceBoost = 0;
+  let signal = `RSI ${rsi.toFixed(1)} neutral`;
+
+  if (bullish.has(strategy)) {
+    if (zone === "oversold") {
+      confidenceBoost = 15;
+      signal = `RSI ${rsi.toFixed(1)} oversold - bullish bias`;
+    } else if (zone === "overbought") {
+      confidenceBoost = -10;
+      signal = `RSI ${rsi.toFixed(1)} overbought - caution for bullish plays`;
+    } else {
+      signal = `RSI ${rsi.toFixed(1)} neutral - standard bullish conditions`;
+    }
+  } else if (bearish.has(strategy)) {
+    if (zone === "overbought") {
+      confidenceBoost = 15;
+      signal = `RSI ${rsi.toFixed(1)} overbought - bearish bias`;
+    } else if (zone === "oversold") {
+      confidenceBoost = -10;
+      signal = `RSI ${rsi.toFixed(1)} oversold - caution for bearish plays`;
+    } else {
+      signal = `RSI ${rsi.toFixed(1)} neutral - standard bearish conditions`;
+    }
+  } else if (neutral.has(strategy)) {
+    if (zone === "neutral") {
+      confidenceBoost = 10;
+      signal = `RSI ${rsi.toFixed(1)} neutral - good for range strategies`;
+    } else {
+      confidenceBoost = -5;
+      signal = `RSI ${rsi.toFixed(1)} at extreme - range strategies riskier`;
+    }
+  }
+
+  return { value: rsi, zone, confidenceBoost, signal };
+}
+
 // Top 20 "most active" + best credit idea per symbol
 router.get("/top-ideas", async (req: Request, res: Response) => {
   try {
@@ -138,7 +200,8 @@ router.get("/top-ideas", async (req: Request, res: Response) => {
         if (!chain.expirations?.length) return null;
         stats.withOptions += 1;
 
-        const ideas = generateTradeIdeas(chain, earnings, DEFAULT_TRADE_CONFIG);
+        // Generate ideas without RSI first (avoid 120x historical calls -> throttling)
+        const ideas = generateTradeIdeas(chain, earnings, DEFAULT_TRADE_CONFIG, null);
         const best = pickBestCreditIdea(ideas);
         if (!best) return null;
         stats.withIdeas += 1;
@@ -198,6 +261,26 @@ router.get("/top-ideas", async (req: Request, res: Response) => {
     if ((req.query.debug as string) === "true") {
       return res.json({ stats, items: top });
     }
+
+    // Attach RSI only for the final returned list to avoid Yahoo throttling.
+    await Promise.all(
+      top.map(async (row) => {
+        const rsi = await getRSIWithFallback(row.symbol, 6, 12);
+        if (rsi === null) return;
+
+        (row.idea as any).rsiAnalysis = buildRSIAnalysisForTopIdeas(rsi, row.idea.strategy);
+
+        if ((row.idea as any).rsiAnalysis?.zone && (row.idea as any).rsiAnalysis.zone !== "neutral") {
+          const zoneLabel =
+            (row.idea as any).rsiAnalysis.zone === "overbought" ? "Overbought" : "Oversold";
+          row.reasons.push(`RSI ${(row.idea as any).rsiAnalysis.value.toFixed(0)} (${zoneLabel})`);
+        }
+
+        // Apply RSI confidence boost to overall score (small bump).
+        const boost = (row.idea as any).rsiAnalysis?.confidenceBoost ?? 0;
+        row.score = Math.max(0, Math.min(100, row.score + Math.round(boost / 2)));
+      })
+    );
 
     res.json(top);
   } catch (error) {
@@ -360,8 +443,15 @@ router.get("/analysis/:ticker", async (req: Request, res: Response) => {
     // Calculate support/resistance
     const supportResistance = calculateSupportResistance(historicalPrices, quote.price);
 
-    // Generate trade ideas and strategy comparisons
-    const tradeIdeas = generateTradeIdeas(chain, earnings, DEFAULT_TRADE_CONFIG);
+    // Calculate RSI for confidence boost in trade ideas (fallback to more history)
+    const closes = historicalPrices.map((p) => p.close);
+    let rsi = calculateRSI(closes, 14);
+    if (rsi === null) {
+      rsi = await getRSIWithFallback(upperTicker, 12, 24);
+    }
+
+    // Generate trade ideas with RSI-based confidence boost
+    const tradeIdeas = generateTradeIdeas(chain, earnings, DEFAULT_TRADE_CONFIG, rsi);
     const strategyComparisons = generateStrategyComparison(chain, earnings, quote);
 
     // Generate framework analysis with auto-calculated checks and scores

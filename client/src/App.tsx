@@ -30,14 +30,12 @@ function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
     <SidebarProvider style={style as React.CSSProperties}>
       <div className="flex min-h-screen w-full">
         <AppSidebar />
-        <SidebarInset className="flex flex-1 flex-col">
+        <SidebarInset className="flex h-svh flex-1 flex-col overflow-hidden">
           <header className="sticky top-0 z-40 flex h-14 items-center justify-between gap-4 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60">
             <SidebarTrigger data-testid="button-sidebar-toggle" />
             <ThemeToggle />
           </header>
-          <main className="flex-1 overflow-hidden">
-            {children}
-          </main>
+          <main className="flex-1 overflow-y-auto overflow-x-hidden">{children}</main>
         </SidebarInset>
       </div>
     </SidebarProvider>

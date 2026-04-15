@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, Loader2, ListPlus, RefreshCcw, Shield } from "lucide-react";
+import { ArrowUpRight, Loader2, ListPlus, RefreshCcw, Shield, Activity } from "lucide-react";
 import { addIdeaToWatchlist } from "@/components/options/IdeaWatchlistTab";
 import { fetchApi } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -111,121 +111,162 @@ export function TopTradeIdeasTab({
           )}
 
           {!isLoading && !error && (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[56px]">Rank</TableHead>
-                  <TableHead>Symbol</TableHead>
-                  <TableHead className="text-right">Price</TableHead>
-                  <TableHead>Strategy</TableHead>
-                  <TableHead>Setup</TableHead>
-                  <TableHead>Earnings</TableHead>
-                  <TableHead className="text-right">Score</TableHead>
-                  <TableHead className="text-right">POP</TableHead>
-                  <TableHead className="text-right">Credit</TableHead>
-                  <TableHead className="text-right">Max loss</TableHead>
-                  <TableHead className="text-right">DTE</TableHead>
-                  <TableHead className="text-right">Chg</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {(data || []).map((row, idx) => {
-                  const idea = row.idea;
-                  const credit = idea.entryPrice * 100;
-                  const earningsText = idea.earningsDate ? idea.earningsDate : "—";
-                  const setup =
-                    idea.strategy === "iron_condor"
-                      ? `${idea.legs.find((l) => l.type === "put" && l.action === "sell")?.strike} / ${
-                          idea.legs.find((l) => l.type === "call" && l.action === "sell")?.strike
-                        }`
-                      : `${idea.legs.find((l) => l.action === "sell")?.strike} - ${
-                          idea.legs.find((l) => l.action === "buy")?.strike
-                        }`;
+            <div
+              className="w-full max-w-full overflow-x-auto overscroll-x-contain rounded-md"
+              style={{ WebkitOverflowScrolling: "touch" }}
+            >
+              <Table className="min-w-[1200px] whitespace-nowrap">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[56px]">Rank</TableHead>
+                    <TableHead>Symbol</TableHead>
+                    <TableHead className="text-right">Price</TableHead>
+                    <TableHead>Strategy</TableHead>
+                    <TableHead>Setup</TableHead>
+                    <TableHead>RSI</TableHead>
+                    <TableHead>Earnings</TableHead>
+                    <TableHead className="text-right">Score</TableHead>
+                    <TableHead className="text-right">POP</TableHead>
+                    <TableHead className="text-right">Credit</TableHead>
+                    <TableHead className="text-right">Max loss</TableHead>
+                    <TableHead className="text-right">DTE</TableHead>
+                    <TableHead className="text-right">Chg</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(data || []).map((row, idx) => {
+                    const idea = row.idea;
+                    const credit = idea.entryPrice * 100;
+                    const earningsText = idea.earningsDate ? idea.earningsDate : "—";
+                    const setup =
+                      idea.strategy === "iron_condor"
+                        ? `${idea.legs.find((l) => l.type === "put" && l.action === "sell")?.strike} / ${
+                            idea.legs.find((l) => l.type === "call" && l.action === "sell")?.strike
+                          }`
+                        : `${idea.legs.find((l) => l.action === "sell")?.strike} - ${
+                            idea.legs.find((l) => l.action === "buy")?.strike
+                          }`;
 
-                  return (
-                    <TableRow key={`${row.symbol}-${idea.id}`}>
-                      <TableCell className="text-muted-foreground">{idx + 1}</TableCell>
-                      <TableCell>
-                        <div className="flex flex-col">
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold">{row.symbol}</span>
-                            <Badge variant="secondary" className="text-[10px]">
-                              Liq {row.liquidityScore}
-                            </Badge>
+                    return (
+                      <TableRow key={`${row.symbol}-${idea.id}`}>
+                        <TableCell className="text-muted-foreground">{idx + 1}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-col">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold">{row.symbol}</span>
+                              <Badge variant="secondary" className="text-[10px]">
+                                Liq {row.liquidityScore}
+                              </Badge>
+                            </div>
+                            <span className="truncate text-xs text-muted-foreground">{row.name}</span>
                           </div>
-                          <span className="truncate text-xs text-muted-foreground">{row.name}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">${row.price.toFixed(2)}</TableCell>
-                      <TableCell>
-                        <Badge variant={idea.recommendation === "strong_buy" ? "default" : "secondary"}>
-                          {idea.strategyName}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{setup}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm text-muted-foreground">{earningsText}</span>
-                          {idea.hasEarningsRisk && (
-                            <Badge
-                              variant="secondary"
-                              className="border border-yellow-300 bg-yellow-500/10 text-yellow-700"
-                            >
-                              Risk
-                            </Badge>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">${row.price.toFixed(2)}</TableCell>
+                        <TableCell>
+                          <Badge variant={idea.recommendation === "strong_buy" ? "default" : "secondary"}>
+                            {idea.strategyName}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{setup}</TableCell>
+                        <TableCell>
+                          {idea.rsiAnalysis ? (
+                            <div className="flex items-center gap-1">
+                              <Activity
+                                className={`h-3 w-3 ${
+                                  idea.rsiAnalysis.zone === "oversold"
+                                    ? "text-green-500"
+                                    : idea.rsiAnalysis.zone === "overbought"
+                                      ? "text-red-500"
+                                      : "text-blue-500"
+                                }`}
+                              />
+                              <span className="text-sm font-medium">{idea.rsiAnalysis.value.toFixed(0)}</span>
+                              {idea.rsiAnalysis.zone !== "neutral" && (
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[10px] ${
+                                    idea.rsiAnalysis.zone === "oversold"
+                                      ? "border-green-400 text-green-600"
+                                      : "border-red-400 text-red-600"
+                                  }`}
+                                >
+                                  {idea.rsiAnalysis.zone === "oversold" ? "Oversold" : "Overbought"}
+                                </Badge>
+                              )}
+                              {idea.rsiAnalysis.confidenceBoost > 0 && (
+                                <span className="text-[10px] font-semibold text-green-600">
+                                  +{idea.rsiAnalysis.confidenceBoost}%
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
                           )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="font-semibold">{row.score}</span>
-                      </TableCell>
-                      <TableCell className="text-right">{idea.probabilityOfProfit.toFixed(0)}%</TableCell>
-                      <TableCell className="text-right">${credit.toFixed(0)}</TableCell>
-                      <TableCell className="text-right">${idea.maxLoss.toFixed(0)}</TableCell>
-                      <TableCell className="text-right">{idea.daysToExpiration}</TableCell>
-                      <TableCell
-                        className={`text-right ${row.changePercent >= 0 ? "text-green-600" : "text-red-600"}`}
-                      >
-                        {fmtPct(row.changePercent)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex flex-wrap justify-end gap-2">
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            size="sm"
-                            disabled={addWatchMut.isPending}
-                            onClick={() => addWatchMut.mutate(row)}
-                          >
-                            <ListPlus className="mr-1 h-3.5 w-3.5" />
-                            Watchlist
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => onAnalyzeSymbol(row.symbol)}
-                          >
-                            Analyze
-                          </Button>
-                          <Button asChild variant="ghost" size="icon" className="h-9 w-9">
-                            <a
-                              href={`https://finance.yahoo.com/quote/${row.symbol}/options`}
-                              target="_blank"
-                              rel="noreferrer"
-                              aria-label="Open on Yahoo Finance"
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-muted-foreground">{earningsText}</span>
+                            {idea.hasEarningsRisk && (
+                              <Badge
+                                variant="secondary"
+                                className="border border-yellow-300 bg-yellow-500/10 text-yellow-700"
+                              >
+                                Risk
+                              </Badge>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="font-semibold">{row.score}</span>
+                        </TableCell>
+                        <TableCell className="text-right">{idea.probabilityOfProfit.toFixed(0)}%</TableCell>
+                        <TableCell className="text-right">${credit.toFixed(0)}</TableCell>
+                        <TableCell className="text-right">${idea.maxLoss.toFixed(0)}</TableCell>
+                        <TableCell className="text-right">{idea.daysToExpiration}</TableCell>
+                        <TableCell
+                          className={`text-right ${row.changePercent >= 0 ? "text-green-600" : "text-red-600"}`}
+                        >
+                          {fmtPct(row.changePercent)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              disabled={addWatchMut.isPending}
+                              onClick={() => addWatchMut.mutate(row)}
                             >
-                              <ArrowUpRight className="h-4 w-4" />
-                            </a>
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+                              <ListPlus className="mr-1 h-3.5 w-3.5" />
+                              Watchlist
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => onAnalyzeSymbol(row.symbol)}
+                            >
+                              Analyze
+                            </Button>
+                            <Button asChild variant="ghost" size="icon" className="h-9 w-9">
+                              <a
+                                href={`https://finance.yahoo.com/quote/${row.symbol}/options`}
+                                target="_blank"
+                                rel="noreferrer"
+                                aria-label="Open on Yahoo Finance"
+                              >
+                                <ArrowUpRight className="h-4 w-4" />
+                              </a>
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </CardContent>
       </Card>

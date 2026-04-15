@@ -51,15 +51,73 @@ export function FrameworkTradeAnalyzer({
   const framework = analysis.frameworkAnalysis;
 
   if (!framework) {
+    const fallback = analysis.tradeIdeas.find((t) => t.rsiAnalysis)?.rsiAnalysis;
     return (
-      <Card className="border-yellow-200 bg-yellow-50/50">
-        <CardContent className="pt-6">
-          <div className="flex items-center gap-2 text-yellow-700">
-            <AlertTriangle className="h-5 w-5" />
-            <span className="text-sm">Framework analysis data not available. Try refreshing.</span>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="space-y-4">
+        <Card className="border-yellow-200 bg-yellow-50/50">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-yellow-700">
+              <AlertTriangle className="h-5 w-5" />
+              <span className="text-sm">
+                Framework analysis data not available for this ticker. Technical Snapshot below uses
+                trade-idea RSI as a fallback.
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Technical Snapshot</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded bg-muted p-2">
+                <div className="text-xs text-muted-foreground">Trend</div>
+                <div className="text-sm font-semibold text-muted-foreground">N/A</div>
+              </div>
+              <div
+                className={`rounded p-2 ${
+                  fallback?.zone === "overbought"
+                    ? "bg-red-100 dark:bg-red-950"
+                    : fallback?.zone === "oversold"
+                      ? "bg-green-100 dark:bg-green-950"
+                      : "bg-muted"
+                }`}
+              >
+                <div className="text-xs text-muted-foreground">RSI Zone</div>
+                <div
+                  className={`text-sm font-semibold ${
+                    fallback?.zone === "overbought"
+                      ? "text-red-600"
+                      : fallback?.zone === "oversold"
+                        ? "text-green-600"
+                        : ""
+                  }`}
+                >
+                  {fallback ? fallback.value.toFixed(1) : "N/A"}
+                  {fallback && (
+                    <span className="ml-1 text-xs font-bold">
+                      {fallback.zone === "overbought"
+                        ? "Overbought"
+                        : fallback.zone === "oversold"
+                          ? "Oversold"
+                          : "Neutral"}
+                    </span>
+                  )}
+                </div>
+                {fallback?.signal && (
+                  <div className="mt-1 text-[10px] text-muted-foreground">{fallback.signal}</div>
+                )}
+              </div>
+              <div className="rounded bg-muted p-2">
+                <div className="text-xs text-muted-foreground">IV Rank</div>
+                <div className="text-sm font-semibold text-muted-foreground">N/A</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
@@ -168,20 +226,37 @@ export function FrameworkTradeAnalyzer({
                 {indicators.trend.charAt(0).toUpperCase() + indicators.trend.slice(1)}
               </div>
             </div>
-            <div className="rounded bg-muted p-2">
-              <div className="text-xs text-muted-foreground">RSI</div>
-              <div className="text-sm font-semibold">
+            <div
+              className={`rounded p-2 ${
+                indicators.rsi && indicators.rsi > 70
+                  ? "bg-red-100 dark:bg-red-950"
+                  : indicators.rsi && indicators.rsi < 30
+                    ? "bg-green-100 dark:bg-green-950"
+                    : "bg-muted"
+              }`}
+            >
+              <div className="text-xs text-muted-foreground">RSI Zone</div>
+              <div
+                className={`text-sm font-semibold ${
+                  indicators.rsi && indicators.rsi > 70
+                    ? "text-red-600"
+                    : indicators.rsi && indicators.rsi < 30
+                      ? "text-green-600"
+                      : ""
+                }`}
+              >
                 {indicators.rsi?.toFixed(1) || "N/A"}
                 {indicators.rsi && (
-                  <span
-                    className={`ml-1 text-xs ${
-                      indicators.rsi > 70 ? "text-red-500" : indicators.rsi < 30 ? "text-blue-500" : ""
-                    }`}
-                  >
-                    {indicators.rsi > 70 ? "(OB)" : indicators.rsi < 30 ? "(OS)" : ""}
+                  <span className="ml-1 text-xs font-bold">
+                    {indicators.rsi > 70 ? "⬆️ OB" : indicators.rsi < 30 ? "⬇️ OS" : ""}
                   </span>
                 )}
               </div>
+              {indicators.rsi && (indicators.rsi > 70 || indicators.rsi < 30) && (
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  {indicators.rsi > 70 ? "Bearish bias" : "Bullish bias"}
+                </div>
+              )}
             </div>
             <div className="rounded bg-muted p-2">
               <div className="text-xs text-muted-foreground">IV Rank</div>
@@ -199,6 +274,30 @@ export function FrameworkTradeAnalyzer({
               </div>
             </div>
           </div>
+
+          {/* RSI Strategy Guidance */}
+          {indicators.rsi && (indicators.rsi > 70 || indicators.rsi < 30) && (
+            <div
+              className={`mt-3 rounded-md p-2 text-xs ${
+                indicators.rsi > 70
+                  ? "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300"
+                  : "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300"
+              }`}
+            >
+              <span className="font-semibold">RSI Strategy Tip: </span>
+              {indicators.rsi > 70 ? (
+                <>
+                  Overbought zone (RSI &gt;70) suggests <strong>Call Credit Spreads</strong> have higher
+                  confidence due to mean reversion potential.
+                </>
+              ) : (
+                <>
+                  Oversold zone (RSI &lt;30) suggests <strong>Put Credit Spreads</strong> have higher
+                  confidence due to bounce potential.
+                </>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 

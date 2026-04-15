@@ -9,10 +9,14 @@ import {
   Percent,
   Clock,
   ListPlus,
+  Activity,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { TradeIdea } from "@shared/optionsSchema";
 
@@ -125,6 +129,64 @@ export function TradeIdeaCard({
             {idea.breakeven.map((b) => `$${b.toFixed(2)}`).join(" / ")}
           </span>
         </div>
+
+        {/* RSI Zone Analysis */}
+        {idea.rsiAnalysis && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div
+                  className={cn(
+                    "mt-3 flex items-center gap-2 rounded-md px-2 py-1.5 text-sm cursor-help",
+                    idea.rsiAnalysis.zone === "oversold" && "bg-green-500/10 text-green-600 border border-green-200",
+                    idea.rsiAnalysis.zone === "overbought" && "bg-red-500/10 text-red-600 border border-red-200",
+                    idea.rsiAnalysis.zone === "neutral" && "bg-blue-500/10 text-blue-600 border border-blue-200"
+                  )}
+                >
+                  <Activity className="h-4 w-4" />
+                  <span className="font-medium">RSI {idea.rsiAnalysis.value.toFixed(1)}</span>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-xs",
+                      idea.rsiAnalysis.zone === "oversold" && "border-green-500 text-green-600",
+                      idea.rsiAnalysis.zone === "overbought" && "border-red-500 text-red-600",
+                      idea.rsiAnalysis.zone === "neutral" && "border-blue-500 text-blue-600"
+                    )}
+                  >
+                    {idea.rsiAnalysis.zone === "oversold" && (
+                      <>
+                        <ArrowDown className="mr-1 h-3 w-3" />
+                        Oversold
+                      </>
+                    )}
+                    {idea.rsiAnalysis.zone === "overbought" && (
+                      <>
+                        <ArrowUp className="mr-1 h-3 w-3" />
+                        Overbought
+                      </>
+                    )}
+                    {idea.rsiAnalysis.zone === "neutral" && "Neutral"}
+                  </Badge>
+                  {idea.rsiAnalysis.confidenceBoost !== 0 && (
+                    <span
+                      className={cn(
+                        "text-xs font-semibold",
+                        idea.rsiAnalysis.confidenceBoost > 0 ? "text-green-600" : "text-red-500"
+                      )}
+                    >
+                      {idea.rsiAnalysis.confidenceBoost > 0 ? "+" : ""}
+                      {idea.rsiAnalysis.confidenceBoost}% confidence
+                    </span>
+                  )}
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-xs">
+                <p className="text-sm">{idea.rsiAnalysis.signal}</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
 
         {/* Earnings Warning */}
         {idea.hasEarningsRisk && (

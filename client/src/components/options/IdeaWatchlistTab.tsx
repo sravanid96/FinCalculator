@@ -8,6 +8,7 @@ import {
   TrendingDown,
   Minus,
   RefreshCw,
+  Pencil,
 } from "lucide-react";
 import type { TradeIdea } from "@shared/optionsSchema";
 import type { OptionsWatchlistRow } from "@shared/schema";
@@ -25,6 +26,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Label } from "@/components/ui/label";
+
+/** Readable text/placeholder in dark table cells (default muted placeholder was too faint). */
+const watchlistInputClass =
+  "h-8 bg-background text-right text-xs tabular-nums text-foreground caret-foreground placeholder:text-muted-foreground/80";
 
 export async function addIdeaToWatchlist(symbol: string, idea: TradeIdea) {
   if (!Number.isFinite(idea.underlyingPrice) || idea.underlyingPrice <= 0) {
@@ -34,6 +41,110 @@ export async function addIdeaToWatchlist(symbol: string, idea: TradeIdea) {
   }
   const res = await apiRequest("POST", "/api/options/watchlist", { symbol, idea });
   return res.json() as Promise<{ item: OptionsWatchlistRow }>;
+}
+
+function WatchlistCreditCell({
+  rowId,
+  entryPrice,
+  settled,
+}: {
+  rowId: string;
+  entryPrice: number;
+  settled: boolean;
+}) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(entryPrice.toFixed(2));
+
+  const patchMut = useMutation({
+    mutationFn: async (price: number) => {
+      const res = await apiRequest("PATCH", `/api/options/watchlist/${rowId}`, {
+        entryPrice: price,
+      });
+      return res.json() as Promise<{ item: OptionsWatchlistRow }>;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/options/watchlist"] });
+      toast({ title: "Entry credit updated", description: "P/L uses your fill from here on." });
+      setOpen(false);
+    },
+    onError: (e: Error) => {
+      toast({ title: "Could not update", description: e.message, variant: "destructive" });
+    },
+  });
+
+  if (settled) {
+    return (
+      <div className="text-right tabular-nums">
+        <span className="text-foreground">${entryPrice.toFixed(2)}</span>
+        <span className="ml-0.5 text-muted-foreground">/sh</span>
+      </div>
+    );
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) setDraft(entryPrice.toFixed(2));
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-auto gap-1 px-2 py-1 font-normal text-foreground hover:bg-muted/80"
+        >
+          <span className="tabular-nums">${entryPrice.toFixed(2)}</span>
+          <span className="text-muted-foreground">/sh</span>
+          <Pencil className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72" align="end">
+        <p className="mb-3 text-xs text-muted-foreground">
+          Pulled from Analysis / Trade ideas when you saved this row. Change it to the{" "}
+          <strong className="font-medium text-foreground">net premium per share</strong> you
+          actually received (same sign as in the idea — credit spreads are usually positive).
+        </p>
+        <Label htmlFor={`credit-${rowId}`} className="text-xs">
+          Net $/share
+        </Label>
+        <div className="mt-1 flex gap-2">
+          <Input
+            id={`credit-${rowId}`}
+            inputMode="decimal"
+            className={watchlistInputClass}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <Button
+            size="sm"
+            disabled={patchMut.isPending}
+            onClick={() => {
+              const v = parseFloat(draft.replace(/,/g, ""));
+              if (!Number.isFinite(v)) {
+                toast({ title: "Enter a valid number", variant: "destructive" });
+                return;
+              }
+              patchMut.mutate(v);
+            }}
+          >
+            Save
+          </Button>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Per contract ≈ $
+          {(
+            (Number.isFinite(parseFloat(draft.replace(/,/g, "")))
+              ? parseFloat(draft.replace(/,/g, ""))
+              : entryPrice) * 100
+          ).toFixed(0)}
+        </p>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 interface WatchlistStats {
@@ -241,8 +352,15 @@ export function IdeaWatchlistTab() {
         <CardHeader>
           <CardTitle className="text-base">Saved trade ideas</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Settle uses the underlying close on or before expiration from Yahoo (or enter a price).
-            P/L is intrinsic value at expiry vs your entry premiums (per contract × 100).
+            <strong className="font-medium text-foreground">Credit</strong> comes from the trade idea
+            when you add a row — edit it if your real fill differed.{" "}
+            <strong className="font-medium text-foreground">Spot</strong> (what-if) is a pretend
+            stock price at expiry to preview P/L; it does not save.{" "}
+            <strong className="font-medium text-foreground">Settle $</strong> is the real closing
+            price of the <em>stock</em> at expiry (or leave blank and use refresh for Yahoo&apos;s
+            close). <strong className="font-medium text-foreground">P/L</strong> is each leg&apos;s
+            intrinsic value at that stock price minus what you paid/received on the legs (× 100 per
+            contract), using your saved (or edited) premiums.
           </p>
         </CardHeader>
         <CardContent>
@@ -257,12 +375,14 @@ export function IdeaWatchlistTab() {
             </p>
           )}
           {!watchLoading && items.length > 0 && (
+            <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Symbol</TableHead>
                   <TableHead>Strategy</TableHead>
                   <TableHead>Expiry</TableHead>
+                  <TableHead className="text-right">Credit</TableHead>
                   <TableHead className="text-right">Entry spot</TableHead>
                   <TableHead className="text-right">Settlement</TableHead>
                   <TableHead className="text-right">P/L @ expiry</TableHead>
@@ -283,6 +403,13 @@ export function IdeaWatchlistTab() {
                         <Badge variant="secondary">{idea?.strategyName || row.strategy}</Badge>
                       </TableCell>
                       <TableCell className="text-sm">{row.expirationDate}</TableCell>
+                      <TableCell className="text-right">
+                        <WatchlistCreditCell
+                          rowId={row.id}
+                          entryPrice={Number(idea?.entryPrice ?? 0)}
+                          settled={settled}
+                        />
+                      </TableCell>
                       <TableCell className="text-right tabular-nums">
                         ${Number(row.entryUnderlyingPrice).toFixed(2)}
                       </TableCell>
@@ -321,7 +448,7 @@ export function IdeaWatchlistTab() {
                       <TableCell>
                         <div className="flex items-center justify-end gap-1">
                           <Input
-                            className="h-8 w-20 text-right text-xs"
+                            className={`${watchlistInputClass} w-20`}
                             placeholder="Spot"
                             value={simPrice[row.id] ?? ""}
                             onChange={(e) =>
@@ -348,7 +475,7 @@ export function IdeaWatchlistTab() {
                           {!settled && (
                             <>
                               <Input
-                                className="h-8 w-[4.5rem] text-right text-xs"
+                                className={`${watchlistInputClass} w-[4.5rem]`}
                                 placeholder="Settle $"
                                 value={settlePrice[row.id] ?? ""}
                                 onChange={(e) =>
@@ -388,6 +515,7 @@ export function IdeaWatchlistTab() {
                 })}
               </TableBody>
             </Table>
+            </div>
           )}
         </CardContent>
       </Card>

@@ -322,7 +322,7 @@ function calculateFrameworkChecks(input: ChecksInput): CheckData[] {
     description: `Price is ${trend} - ${trend === "bullish" ? "Above key moving averages" : trend === "bearish" ? "Below key moving averages" : "Mixed signals"}`,
   });
 
-  // RSI check - good if not at extreme
+  // RSI check - good if not at extreme (for neutral strategies)
   const rsiOk = rsi !== null && rsi > 30 && rsi < 70;
   checks.push({
     id: "momentum_ok",
@@ -332,6 +332,23 @@ function calculateFrameworkChecks(input: ChecksInput): CheckData[] {
     value: rsi?.toFixed(1),
     description: rsi
       ? `RSI: ${rsi.toFixed(1)} - ${rsi > 70 ? "Overbought" : rsi < 30 ? "Oversold" : "Neutral zone"}`
+      : "RSI unavailable",
+  });
+
+  // RSI zone-based directional signal check
+  const rsiZoneSignal = rsi !== null && (rsi > 70 || rsi < 30);
+  checks.push({
+    id: "rsi_zone_signal",
+    label: "RSI zone provides directional signal",
+    passed: rsiZoneSignal,
+    pillar: "technical",
+    value: rsi ? (rsi > 70 ? "Overbought (bearish bias)" : rsi < 30 ? "Oversold (bullish bias)" : "No signal") : "N/A",
+    description: rsi
+      ? rsi > 70
+        ? `RSI ${rsi.toFixed(1)} overbought - consider bearish strategies (call credit spreads)`
+        : rsi < 30
+          ? `RSI ${rsi.toFixed(1)} oversold - consider bullish strategies (put credit spreads)`
+          : "RSI in neutral zone - no strong directional bias from RSI"
       : "RSI unavailable",
   });
 
@@ -534,6 +551,47 @@ function generateSuggestions(
 
   if (scores.fundamental.pct >= 70 && scores.technical.pct < 50) {
     suggestions.push("Good fundamentals but poor entry timing - wait for pullback to support.");
+  }
+
+  // RSI Zone-based suggestions (priority)
+  const rsiZoneCheck = checks.find((c) => c.id === "rsi_zone_signal");
+  const momentumCheck = checks.find((c) => c.id === "momentum_ok");
+  
+  if (rsiZoneCheck?.passed && momentumCheck?.value) {
+    const rsiValue = parseFloat(String(momentumCheck.value));
+    
+    if (rsiValue > 70) {
+      // Overbought - favor bearish strategies
+      const callSpread = tradeIdeas.find((t) => t.strategy === "call_credit_spread");
+      if (callSpread) {
+        const boost = callSpread.rsiAnalysis?.confidenceBoost ?? 0;
+        suggestions.push(
+          `📊 RSI ${rsiValue.toFixed(0)} OVERBOUGHT: ${callSpread.strategyName} has +${boost}% confidence boost - ideal for mean reversion`
+        );
+      }
+      suggestions.push("🔴 Overbought zone: Avoid new bullish positions, consider taking profits on longs");
+    } else if (rsiValue < 30) {
+      // Oversold - favor bullish strategies
+      const putSpread = tradeIdeas.find((t) => t.strategy === "put_credit_spread");
+      if (putSpread) {
+        const boost = putSpread.rsiAnalysis?.confidenceBoost ?? 0;
+        suggestions.push(
+          `📊 RSI ${rsiValue.toFixed(0)} OVERSOLD: ${putSpread.strategyName} has +${boost}% confidence boost - ideal for bounce play`
+        );
+      }
+      suggestions.push("🟢 Oversold zone: Bullish reversal likely, great entry for put credit spreads");
+    }
+  } else if (momentumCheck?.value) {
+    // RSI in neutral zone
+    const rsiValue = parseFloat(String(momentumCheck.value));
+    if (rsiValue >= 30 && rsiValue <= 70) {
+      const ironCondor = tradeIdeas.find((t) => t.strategy === "iron_condor");
+      if (ironCondor) {
+        suggestions.push(
+          `📊 RSI ${rsiValue.toFixed(0)} neutral: ${ironCondor.strategyName} favorable - range-bound conditions expected`
+        );
+      }
+    }
   }
 
   // Trend alignment

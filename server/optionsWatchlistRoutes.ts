@@ -33,6 +33,62 @@ function pnlAtUnderlying(idea: TradeIdea, underlying: number): number {
   return calculatePLAtPrice(legs, underlying, entryPrices);
 }
 
+/** Net premium per share: sells add, buys subtract (matches analysis `entryPrice` for typical credit spreads). */
+function netPremiumPerShare(idea: TradeIdea): number {
+  let net = 0;
+  for (const l of idea.legs) {
+    const sign = l.action === "sell" ? 1 : -1;
+    net += sign * l.price * l.quantity;
+  }
+  return Math.round(net * 1e6) / 1e6;
+}
+
+/** Shift short-leg entry prices so net matches actual fill; keeps strikes/structure, fixes P/L vs real credit. */
+function ideaWithAdjustedEntryPrice(idea: TradeIdea, targetNetPerShare: number): TradeIdea {
+  const current = netPremiumPerShare(idea);
+  const diff = targetNetPerShare - current;
+  const shortQty = idea.legs
+    .filter((l) => l.action === "sell")
+    .reduce((s, l) => s + l.quantity, 0);
+  const longQty = idea.legs
+    .filter((l) => l.action === "buy")
+    .reduce((s, l) => s + l.quantity, 0);
+
+  if (Math.abs(diff) < 1e-9) {
+    return { ...idea, entryPrice: Math.round(targetNetPerShare * 1e4) / 1e4 };
+  }
+
+  if (shortQty > 0) {
+    const perShortShare = diff / shortQty;
+    const newLegs = idea.legs.map((l) =>
+      l.action === "sell"
+        ? { ...l, price: Math.round((l.price + perShortShare) * 1e4) / 1e4 }
+        : { ...l },
+    );
+    return {
+      ...idea,
+      legs: newLegs,
+      entryPrice: Math.round(targetNetPerShare * 1e4) / 1e4,
+    };
+  }
+
+  if (longQty > 0) {
+    const perLongShare = -diff / longQty;
+    const newLegs = idea.legs.map((l) =>
+      l.action === "buy"
+        ? { ...l, price: Math.round((l.price + perLongShare) * 1e4) / 1e4 }
+        : { ...l },
+    );
+    return {
+      ...idea,
+      legs: newLegs,
+      entryPrice: Math.round(targetNetPerShare * 1e4) / 1e4,
+    };
+  }
+
+  return { ...idea, entryPrice: Math.round(targetNetPerShare * 1e4) / 1e4 };
+}
+
 function outcomeFromPnl(pnl: number): "win" | "loss" | "breakeven" {
   if (Math.abs(pnl) < 0.01) return "breakeven";
   return pnl > 0 ? "win" : "loss";
@@ -131,6 +187,11 @@ const addBodySchema = z.object({
 
 const settleBodySchema = z.object({
   underlyingPrice: z.number().positive().optional(),
+});
+
+const patchWatchlistBodySchema = z.object({
+  /** Net premium per share in the same convention as Trade ideas (e.g. credit received for credit spreads). */
+  entryPrice: z.number().finite(),
 });
 
 router.get("/stats", async (req: Request, res: Response) => {
@@ -258,6 +319,44 @@ router.delete("/:id", async (req: Request, res: Response) => {
     .where(and(eq(optionsWatchlist.id, id), eq(optionsWatchlist.userId, userId)));
 
   res.json({ ok: true });
+});
+
+router.patch("/:id", async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+  const parsed = patchWatchlistBodySchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Invalid body", issues: parsed.error.issues });
+  }
+
+  const [row] = await db
+    .select()
+    .from(optionsWatchlist)
+    .where(and(eq(optionsWatchlist.id, req.params.id), eq(optionsWatchlist.userId, userId)));
+
+  if (!row) return res.status(404).json({ message: "Not found" });
+  if (row.settlementPnl != null) {
+    return res.status(400).json({ message: "Cannot change entry credit after settlement" });
+  }
+
+  const idea = row.ideaJson as unknown as TradeIdea;
+  if (!idea?.legs?.length) {
+    return res.status(400).json({ message: "Stored idea is invalid" });
+  }
+
+  const updatedIdea = ideaWithAdjustedEntryPrice(idea, parsed.data.entryPrice);
+  const now = new Date();
+  const [out] = await db
+    .update(optionsWatchlist)
+    .set({
+      ideaJson: updatedIdea as unknown as Record<string, unknown>,
+      updatedAt: now,
+    })
+    .where(and(eq(optionsWatchlist.id, row.id), eq(optionsWatchlist.userId, userId)))
+    .returning();
+
+  res.json({ item: out });
 });
 
 router.post("/:id/settle", async (req: Request, res: Response) => {

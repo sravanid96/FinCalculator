@@ -107,6 +107,16 @@ export type OptionStrategy =
   | "straddle"
   | "strangle";
 
+// RSI zone classification for confidence boost
+export type RSIZone = "overbought" | "oversold" | "neutral";
+
+export interface RSIAnalysis {
+  value: number;
+  zone: RSIZone;
+  confidenceBoost: number; // -20 to +20 based on zone alignment with strategy
+  signal: string; // Human-readable signal description
+}
+
 // Trade idea result
 export interface TradeIdea {
   id: string;
@@ -127,6 +137,7 @@ export interface TradeIdea {
   earningsDate?: string;
   recommendation: "strong_buy" | "buy" | "neutral" | "avoid";
   notes: string[];
+  rsiAnalysis?: RSIAnalysis; // RSI-based confidence analysis
 }
 
 // Individual leg of a trade

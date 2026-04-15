@@ -78,7 +78,7 @@ export default function Options() {
   }, []);
 
   return (
-    <div className="flex-1 space-y-6 overflow-auto p-4 sm:p-8">
+    <div className="space-y-6 p-4 sm:p-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold">Options Trading</h1>
@@ -191,6 +191,28 @@ export default function Options() {
                           Earnings in {analysis.upcomingEarnings.daysUntil} days
                         </Badge>
                       )}
+                      {analysis.frameworkAnalysis?.indicators?.rsi !== null &&
+                        analysis.frameworkAnalysis?.indicators?.rsi !== undefined && (
+                          <Badge
+                            variant="outline"
+                            className={`flex items-center gap-1 ${
+                              analysis.frameworkAnalysis.indicators.rsi > 70
+                                ? "border-red-300 bg-red-500/10 text-red-700"
+                                : analysis.frameworkAnalysis.indicators.rsi < 30
+                                  ? "border-green-300 bg-green-500/10 text-green-700"
+                                  : "border-blue-300 bg-blue-500/10 text-blue-700"
+                            }`}
+                          >
+                            <span className="font-semibold">
+                              RSI {analysis.frameworkAnalysis.indicators.rsi.toFixed(1)}
+                            </span>
+                            {analysis.frameworkAnalysis.indicators.rsi > 70
+                              ? "(OB)"
+                              : analysis.frameworkAnalysis.indicators.rsi < 30
+                                ? "(OS)"
+                                : ""}
+                          </Badge>
+                        )}
                       {analysis.upcomingEarnings && analysis.upcomingEarnings.daysUntil <= 21 && (
                         <Badge
                           variant="secondary"

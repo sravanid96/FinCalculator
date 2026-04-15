@@ -9,6 +9,8 @@ import type {
   StrategyComparison,
   EarningsEvent,
   StockQuote,
+  RSIAnalysis,
+  RSIZone,
 } from "../../shared/optionsSchema";
 import { DEFAULT_TRADE_CONFIG, STRATEGY_NAMES } from "../../shared/optionsSchema";
 import {
@@ -103,7 +105,8 @@ function findNearestStrike(
 function generatePutCreditSpread(
   chain: OptionsChain,
   config: TradeIdeaConfig,
-  earnings: EarningsEvent | null
+  earnings: EarningsEvent | null,
+  rsi: number | null = null
 ): TradeIdea | null {
   const expiration = findTargetExpiration(chain.expirations, config.targetDTE);
   if (!expiration) return null;
@@ -162,17 +165,25 @@ function generatePutCreditSpread(
   const riskReward = calculateRiskReward(maxProfit, maxLoss);
   const hasEarnings = hasEarningsWithinWindow(earnings, expiration.daysToExpiration);
 
+  // Calculate RSI-based confidence
+  const rsiAnalysis = calculateRSIConfidenceBoost(rsi, "put_credit_spread");
+
   const notes: string[] = [
     `Collect $${netCredit.toFixed(2)} credit per spread`,
     `Take profit at $${(netCredit * 0.5).toFixed(2)} (50% of max)`,
     `Manage position at 21 DTE`,
   ];
 
+  // Add RSI-based note if applicable
+  if (rsiAnalysis && rsiAnalysis.zone !== "neutral") {
+    notes.unshift(`📊 ${rsiAnalysis.signal}`);
+  }
+
   if (hasEarnings && earnings) {
     notes.push(`⚠️ Earnings on ${earnings.reportDate} - consider closing before`);
   }
 
-  const recommendation = getRecommendation(pop, riskReward, hasEarnings);
+  const recommendation = getRecommendation(pop, riskReward, hasEarnings, rsiAnalysis);
 
   return {
     id: generateId(),
@@ -193,6 +204,7 @@ function generatePutCreditSpread(
     earningsDate: earnings?.reportDate,
     recommendation,
     notes,
+    rsiAnalysis,
   };
 }
 
@@ -200,7 +212,8 @@ function generatePutCreditSpread(
 function generateCallCreditSpread(
   chain: OptionsChain,
   config: TradeIdeaConfig,
-  earnings: EarningsEvent | null
+  earnings: EarningsEvent | null,
+  rsi: number | null = null
 ): TradeIdea | null {
   const expiration = findTargetExpiration(chain.expirations, config.targetDTE);
   if (!expiration) return null;
@@ -251,15 +264,25 @@ function generateCallCreditSpread(
   const riskReward = calculateRiskReward(maxProfit, maxLoss);
   const hasEarnings = hasEarningsWithinWindow(earnings, expiration.daysToExpiration);
 
+  // Calculate RSI-based confidence
+  const rsiAnalysis = calculateRSIConfidenceBoost(rsi, "call_credit_spread");
+
   const notes: string[] = [
     `Collect $${netCredit.toFixed(2)} credit per spread`,
     `Take profit at $${(netCredit * 0.5).toFixed(2)} (50% of max)`,
     `Manage position at 21 DTE`,
   ];
 
+  // Add RSI-based note if applicable
+  if (rsiAnalysis && rsiAnalysis.zone !== "neutral") {
+    notes.unshift(`📊 ${rsiAnalysis.signal}`);
+  }
+
   if (hasEarnings && earnings) {
     notes.push(`⚠️ Earnings on ${earnings.reportDate} - consider closing before`);
   }
+
+  const recommendation = getRecommendation(pop, riskReward, hasEarnings, rsiAnalysis);
 
   return {
     id: generateId(),
@@ -278,8 +301,9 @@ function generateCallCreditSpread(
     underlyingPrice: chain.underlyingPrice,
     hasEarningsRisk: hasEarnings,
     earningsDate: earnings?.reportDate,
-    recommendation: getRecommendation(pop, riskReward, hasEarnings),
+    recommendation,
     notes,
+    rsiAnalysis,
   };
 }
 
@@ -287,7 +311,8 @@ function generateCallCreditSpread(
 function generateIronCondor(
   chain: OptionsChain,
   config: TradeIdeaConfig,
-  earnings: EarningsEvent | null
+  earnings: EarningsEvent | null,
+  rsi: number | null = null
 ): TradeIdea | null {
   const expiration = findTargetExpiration(chain.expirations, config.targetDTE);
   if (!expiration) return null;
@@ -367,15 +392,29 @@ function generateIronCondor(
   const riskReward = calculateRiskReward(maxProfit, maxLoss);
   const hasEarnings = hasEarningsWithinWindow(earnings, expiration.daysToExpiration);
 
+  // Calculate RSI-based confidence
+  const rsiAnalysis = calculateRSIConfidenceBoost(rsi, "iron_condor");
+
   const notes: string[] = [
     `Collect $${netCredit.toFixed(2)} credit per iron condor`,
     `Profit zone: $${shortPut.strike.toFixed(0)} - $${shortCall.strike.toFixed(0)}`,
     `Take profit at 50% of max`,
   ];
 
+  // Add RSI-based note if applicable
+  if (rsiAnalysis) {
+    if (rsiAnalysis.zone === "neutral") {
+      notes.unshift(`📊 ${rsiAnalysis.signal}`);
+    } else {
+      notes.unshift(`⚠️ ${rsiAnalysis.signal}`);
+    }
+  }
+
   if (hasEarnings && earnings) {
     notes.push(`⚠️ Earnings on ${earnings.reportDate} - high risk!`);
   }
+
+  const recommendation = getRecommendation(pop, riskReward, hasEarnings, rsiAnalysis);
 
   return {
     id: generateId(),
@@ -394,21 +433,110 @@ function generateIronCondor(
     underlyingPrice: chain.underlyingPrice,
     hasEarningsRisk: hasEarnings,
     earningsDate: earnings?.reportDate,
-    recommendation: getRecommendation(pop, riskReward, hasEarnings),
+    recommendation,
     notes,
+    rsiAnalysis,
   };
 }
 
-// Get recommendation based on metrics
+// Classify RSI into zones
+function classifyRSIZone(rsi: number | null): RSIZone {
+  if (rsi === null) return "neutral";
+  if (rsi >= 70) return "overbought";
+  if (rsi <= 30) return "oversold";
+  return "neutral";
+}
+
+// Calculate RSI-based confidence adjustment for a strategy
+function calculateRSIConfidenceBoost(
+  rsi: number | null,
+  strategy: OptionStrategy
+): RSIAnalysis | undefined {
+  if (rsi === null) return undefined;
+
+  const zone = classifyRSIZone(rsi);
+  let confidenceBoost = 0;
+  let signal = "";
+
+  // Bullish strategies benefit from oversold RSI
+  const bullishStrategies: OptionStrategy[] = [
+    "put_credit_spread",
+    "long_call",
+    "cash_secured_put",
+    "covered_call",
+  ];
+
+  // Bearish strategies benefit from overbought RSI
+  const bearishStrategies: OptionStrategy[] = [
+    "call_credit_spread",
+    "long_put",
+  ];
+
+  // Neutral strategies work best in neutral RSI zones
+  const neutralStrategies: OptionStrategy[] = [
+    "iron_condor",
+    "iron_butterfly",
+    "straddle",
+    "strangle",
+  ];
+
+  if (bullishStrategies.includes(strategy)) {
+    if (zone === "oversold") {
+      confidenceBoost = 15;
+      signal = `RSI ${rsi.toFixed(1)} in oversold zone - bullish reversal likely, high confidence for ${STRATEGY_NAMES[strategy]}`;
+    } else if (zone === "overbought") {
+      confidenceBoost = -10;
+      signal = `RSI ${rsi.toFixed(1)} in overbought zone - caution for bullish plays, potential pullback ahead`;
+    } else {
+      confidenceBoost = 0;
+      signal = `RSI ${rsi.toFixed(1)} in neutral zone - standard conditions for ${STRATEGY_NAMES[strategy]}`;
+    }
+  } else if (bearishStrategies.includes(strategy)) {
+    if (zone === "overbought") {
+      confidenceBoost = 15;
+      signal = `RSI ${rsi.toFixed(1)} in overbought zone - bearish reversal likely, high confidence for ${STRATEGY_NAMES[strategy]}`;
+    } else if (zone === "oversold") {
+      confidenceBoost = -10;
+      signal = `RSI ${rsi.toFixed(1)} in oversold zone - caution for bearish plays, potential bounce ahead`;
+    } else {
+      confidenceBoost = 0;
+      signal = `RSI ${rsi.toFixed(1)} in neutral zone - standard conditions for ${STRATEGY_NAMES[strategy]}`;
+    }
+  } else if (neutralStrategies.includes(strategy)) {
+    if (zone === "neutral") {
+      confidenceBoost = 10;
+      signal = `RSI ${rsi.toFixed(1)} in neutral zone - ideal conditions for range-bound ${STRATEGY_NAMES[strategy]}`;
+    } else {
+      confidenceBoost = -5;
+      signal = `RSI ${rsi.toFixed(1)} at extreme (${zone}) - potential directional move could challenge ${STRATEGY_NAMES[strategy]}`;
+    }
+  }
+
+  return {
+    value: rsi,
+    zone,
+    confidenceBoost,
+    signal,
+  };
+}
+
+// Get recommendation based on metrics with RSI confidence boost
 function getRecommendation(
   pop: number,
   riskReward: number,
-  hasEarnings: boolean
+  hasEarnings: boolean,
+  rsiAnalysis?: RSIAnalysis
 ): "strong_buy" | "buy" | "neutral" | "avoid" {
   if (hasEarnings) return "avoid";
-  if (pop >= 70 && riskReward >= 0.3) return "strong_buy";
-  if (pop >= 60 && riskReward >= 0.2) return "buy";
-  if (pop >= 50) return "neutral";
+
+  // Apply RSI confidence boost to POP for recommendation decision
+  const adjustedPop = rsiAnalysis
+    ? Math.min(95, Math.max(10, pop + rsiAnalysis.confidenceBoost))
+    : pop;
+
+  if (adjustedPop >= 70 && riskReward >= 0.3) return "strong_buy";
+  if (adjustedPop >= 60 && riskReward >= 0.2) return "buy";
+  if (adjustedPop >= 50) return "neutral";
   return "avoid";
 }
 
@@ -416,26 +544,32 @@ function getRecommendation(
 export function generateTradeIdeas(
   chain: OptionsChain,
   earnings: EarningsEvent | null,
-  config: TradeIdeaConfig = DEFAULT_TRADE_CONFIG
+  config: TradeIdeaConfig = DEFAULT_TRADE_CONFIG,
+  rsi: number | null = null
 ): TradeIdea[] {
   const ideas: TradeIdea[] = [];
 
   // Generate primary strategy (put credit spread based on user's rules)
-  const putSpread = generatePutCreditSpread(chain, config, earnings);
+  const putSpread = generatePutCreditSpread(chain, config, earnings, rsi);
   if (putSpread) ideas.push(putSpread);
 
   // Generate alternative strategies
-  const callSpread = generateCallCreditSpread(chain, config, earnings);
+  const callSpread = generateCallCreditSpread(chain, config, earnings, rsi);
   if (callSpread) ideas.push(callSpread);
 
-  const ironCondor = generateIronCondor(chain, config, earnings);
+  const ironCondor = generateIronCondor(chain, config, earnings, rsi);
   if (ironCondor) ideas.push(ironCondor);
 
-  // Sort by recommendation quality
+  // Sort by recommendation quality, then by RSI confidence boost
   const recommendationOrder = { strong_buy: 0, buy: 1, neutral: 2, avoid: 3 };
-  ideas.sort(
-    (a, b) => recommendationOrder[a.recommendation] - recommendationOrder[b.recommendation]
-  );
+  ideas.sort((a, b) => {
+    const recDiff = recommendationOrder[a.recommendation] - recommendationOrder[b.recommendation];
+    if (recDiff !== 0) return recDiff;
+    // Secondary sort by RSI confidence boost (higher boost = better)
+    const aBoost = a.rsiAnalysis?.confidenceBoost ?? 0;
+    const bBoost = b.rsiAnalysis?.confidenceBoost ?? 0;
+    return bBoost - aBoost;
+  });
 
   return ideas;
 }
