@@ -29,7 +29,14 @@ export async function setupVite(server: Server, app: Express) {
     appType: "custom",
   });
 
-  app.use(vite.middlewares);
+  // Vite's middleware can interfere with API routes in dev mode.
+  // Skip Vite processing for /api/* and /health/* so they hit Express handlers.
+  app.use((req, res, next) => {
+    if (req.path.startsWith("/api/") || req.path.startsWith("/health")) {
+      return next();
+    }
+    return vite.middlewares(req, res, next);
+  });
 
   app.use("*", async (req, res, next) => {
     const url = req.originalUrl;

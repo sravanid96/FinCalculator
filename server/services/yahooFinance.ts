@@ -109,6 +109,18 @@ export async function getStockQuote(symbol: string): Promise<StockQuote> {
   }
 }
 
+/** Safely turn a Date-ish value into "yyyy-mm-dd" (or empty string). */
+function safeIsoDay(v: any): string {
+  if (!v) return "";
+  try {
+    const d = v instanceof Date ? v : new Date(v);
+    if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "";
+    return d.toISOString().split("T")[0];
+  } catch {
+    return "";
+  }
+}
+
 export async function getHistoricalPrices(
   symbol: string,
   months: number = 6
@@ -117,33 +129,50 @@ export async function getHistoricalPrices(
   const cached = getCached<PriceDataPoint[]>(cacheKey, HISTORICAL_CACHE_TTL);
   if (cached) return cached;
 
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setMonth(startDate.getMonth() - months);
+
+  // Try the normal path first. If yahoo-finance2 throws a schema-validation
+  // error, retry once asking it to return the raw object without validation.
+  const fetchChart = async (validateResult: boolean) =>
+    yahooFinance.chart(
+      symbol,
+      { period1: startDate, period2: endDate, interval: "1d" },
+      { validateResult }
+    );
+
+  let historical: YFChart | null = null;
   try {
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - months);
-
-    const historical: YFChart = await yahooFinance.chart(symbol, {
-      period1: startDate,
-      period2: endDate,
-      interval: "1d",
-    });
-
-    const result: PriceDataPoint[] =
-      historical.quotes?.map((q: any) => ({
-        date: q.date?.toISOString().split("T")[0] || "",
-        open: q.open || 0,
-        high: q.high || 0,
-        low: q.low || 0,
-        close: q.close || 0,
-        volume: q.volume || 0,
-      })) || [];
-
-    setCache(cacheKey, result);
-    return result;
+    historical = await fetchChart(true);
   } catch (error) {
-    console.error(`Error fetching historical data for ${symbol}:`, error);
-    throw new Error(`Failed to fetch historical data for ${symbol}`);
+    // Retry once with validation disabled (Yahoo occasionally returns data
+    // with new/extra fields that trip yahoo-finance2's schema).
+    try {
+      historical = await fetchChart(false);
+    } catch (innerErr) {
+      console.error(
+        `Error fetching historical data for ${symbol}:`,
+        (innerErr as Error).message || innerErr,
+      );
+      throw new Error(`Failed to fetch historical data for ${symbol}`);
+    }
   }
+
+  const quotes: any[] = Array.isArray(historical?.quotes) ? historical!.quotes : [];
+  const result: PriceDataPoint[] = quotes
+    .map((q: any) => ({
+      date: safeIsoDay(q?.date),
+      open: Number(q?.open) || 0,
+      high: Number(q?.high) || 0,
+      low: Number(q?.low) || 0,
+      close: Number(q?.close) || 0,
+      volume: Number(q?.volume) || 0,
+    }))
+    .filter((p) => p.date && p.close > 0);
+
+  setCache(cacheKey, result);
+  return result;
 }
 
 export async function getOptionsChain(symbol: string): Promise<OptionsChain> {

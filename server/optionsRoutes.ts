@@ -12,8 +12,22 @@ import { calculateSupportResistance } from "./services/supportResistance";
 import { getUpcomingEarnings } from "./services/earningsService";
 import { generateTradeIdeas, generateStrategyComparison } from "./services/tradeIdeaGenerator";
 import { generateFrameworkAnalysis, calculateRSI } from "./services/frameworkAnalysis";
+import {
+  backtestSymbols,
+  backtestSymbol,
+  DEFAULT_BACKTEST_CONFIG,
+  METHODOLOGY_NOTES,
+} from "./services/backtestEngine";
 import { plCalculationSchema, DEFAULT_TRADE_CONFIG } from "../shared/optionsSchema";
-import type { TickerAnalysis, TopOptionTradeIdea, TradeIdea, OptionsChain } from "../shared/optionsSchema";
+import type {
+  TickerAnalysis,
+  TopOptionTradeIdea,
+  TradeIdea,
+  OptionsChain,
+  BacktestConfig,
+  OptionStrategy,
+  BacktestTop20Response,
+} from "../shared/optionsSchema";
 
 const router = Router();
 
@@ -478,6 +492,264 @@ router.get("/analysis/:ticker", async (req: Request, res: Response) => {
   } catch (error) {
     console.error(`Error analyzing ${req.params.ticker}:`, error);
     res.status(500).json({ error: "Failed to analyze ticker", details: (error as Error).message });
+  }
+});
+
+// ============================================================================
+// Backtest endpoints
+// ============================================================================
+
+// In-memory cache for backtest results (expensive to compute).
+// Key is JSON of { symbols, cfg, years }. TTL is long (24h) since historical data
+// doesn't change intraday.
+const BACKTEST_CACHE_TTL = 24 * 60 * 60 * 1000;
+const backtestCache = new Map<string, { data: any; timestamp: number }>();
+
+function getBacktestCached<T>(key: string): T | null {
+  const c = backtestCache.get(key);
+  if (c && Date.now() - c.timestamp < BACKTEST_CACHE_TTL) return c.data as T;
+  return null;
+}
+
+function setBacktestCached(key: string, data: any): void {
+  backtestCache.set(key, { data, timestamp: Date.now() });
+}
+
+/** Parse + validate strategy query. Allow-list to what the engine supports. */
+function parseStrategy(q: unknown): OptionStrategy {
+  const allowed = new Set(["put_credit_spread", "call_credit_spread", "iron_condor"]);
+  if (typeof q === "string" && allowed.has(q)) return q as OptionStrategy;
+  return "put_credit_spread";
+}
+
+function buildConfigFromQuery(req: Request): BacktestConfig {
+  return {
+    strategy: parseStrategy(req.query.strategy),
+    dte: Math.max(
+      14,
+      Math.min(Number.parseInt((req.query.dte as string) || "45", 10) || 45, 90)
+    ),
+    targetDelta: Math.max(
+      10,
+      Math.min(Number.parseInt((req.query.delta as string) || "30", 10) || 30, 45)
+    ),
+    spreadWidth: Math.max(
+      1,
+      Math.min(Number.parseFloat((req.query.width as string) || "5") || 5, 25)
+    ),
+    takeProfitPct: Math.max(
+      20,
+      Math.min(Number.parseInt((req.query.tp as string) || "50", 10) || 50, 90)
+    ),
+    stopLossMult: DEFAULT_BACKTEST_CONFIG.stopLossMult,
+    entryFrequencyDays: Math.max(
+      1,
+      Math.min(Number.parseInt((req.query.freq as string) || "5", 10) || 5, 30)
+    ),
+  };
+}
+
+function emptyBacktestResponse(
+  cfg: BacktestConfig,
+  years: number,
+  extraNotes: string[] = []
+): BacktestTop20Response {
+  return {
+    generatedAt: new Date().toISOString(),
+    yearsTested: years,
+    config: cfg,
+    results: [],
+    summary: {
+      totalTrades: 0,
+      aggregateWinRate: 0,
+      aggregateAvgPnl: 0,
+      aggregateTotalPnl: 0,
+      symbolsWithPositiveEdge: 0,
+      symbolsWithNegativeEdge: 0,
+      benchmarkSpyReturnPct: null,
+    },
+    methodology: [...extraNotes, ...METHODOLOGY_NOTES],
+  };
+}
+
+// Backtest across the top-N most-active universe OR a custom list of symbols.
+// Design note: this endpoint is "best-effort" — individual symbol failures never
+// cause the whole response to 500. Transient Yahoo validation errors, rate
+// limits, or network blips produce partial results instead of an error.
+//
+// Query params:
+//   symbols=AAPL,MSFT,GOOG  — optional comma-separated list of specific symbols to backtest
+//   limit=15                — fallback count if symbols not provided
+//   years=2                 — lookback period
+router.get("/backtest/top20", async (req: Request, res: Response) => {
+  const years = Math.max(
+    1,
+    Math.min(Number.parseFloat((req.query.years as string) || "2") || 2, 5)
+  );
+  const cfg = buildConfigFromQuery(req);
+
+  // If client provides specific symbols, use those; otherwise fall back to most-active
+  const symbolsParam = (req.query.symbols as string)?.trim();
+  let symbols: string[] = [];
+
+  if (symbolsParam) {
+    // Use the client-provided list
+    symbols = symbolsParam
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => s.length > 0 && s.length <= 10)
+      .slice(0, 30); // Cap at 30 symbols max
+  } else {
+    // Fall back to most-active
+    const limit = Math.min(
+      Number.parseInt((req.query.limit as string) || "15", 10) || 15,
+      30
+    );
+    try {
+      const mostActive = await getMostActiveTickers(limit);
+      symbols = mostActive.map((t) => t.symbol.toUpperCase());
+    } catch (e) {
+      console.warn(
+        "getMostActiveTickers failed:",
+        (e as Error).message,
+      );
+    }
+  }
+
+  if (symbols.length === 0) {
+    return res.json(
+      emptyBacktestResponse(cfg, years, [
+        "⚠ No symbols to backtest. Either provide ?symbols=AAPL,MSFT,... or the most-active list couldn't be loaded (Yahoo rate-limit). Try again in a few minutes.",
+      ]),
+    );
+  }
+
+  try {
+    const cacheKey = `bt:top:${symbols.join(",")}:${years}:${JSON.stringify(cfg)}`;
+    const cached = getBacktestCached<BacktestTop20Response>(cacheKey);
+    if (cached) return res.json(cached);
+
+    const results = await backtestSymbols(symbols, cfg, years, 4);
+    results.sort((a, b) => {
+      const edgeOrder = { strong: 0, positive: 1, flat: 2, negative: 3 };
+      const aE = edgeOrder[a.historicalEdge];
+      const bE = edgeOrder[b.historicalEdge];
+      if (aE !== bE) return aE - bE;
+      if (b.sharpe !== a.sharpe) return b.sharpe - a.sharpe;
+      return b.winRate - a.winRate;
+    });
+
+    let benchmarkSpyReturnPct: number | null = null;
+    try {
+      const spyBt = await backtestSymbol("SPY", cfg, years);
+      if (spyBt) benchmarkSpyReturnPct = spyBt.buyHoldReturnPct;
+    } catch (e) {
+      console.warn("SPY benchmark failed:", (e as Error).message);
+    }
+
+    const totalTrades = results.reduce((s, r) => s + r.tradesCount, 0);
+    const totalWins = results.reduce((s, r) => s + r.wins, 0);
+    const totalPnl = results.reduce((s, r) => s + r.totalPnl, 0);
+    const aggregateWinRate = totalTrades > 0 ? (totalWins / totalTrades) * 100 : 0;
+    const aggregateAvgPnl = totalTrades > 0 ? totalPnl / totalTrades : 0;
+    const symbolsWithPositiveEdge = results.filter(
+      (r) => r.historicalEdge === "positive" || r.historicalEdge === "strong",
+    ).length;
+    const symbolsWithNegativeEdge = results.filter(
+      (r) => r.historicalEdge === "negative",
+    ).length;
+
+    const extraNotes: string[] = [];
+    if (results.length === 0) {
+      extraNotes.push(
+        `⚠ Could not retrieve historical data for any of the ${symbols.length} symbols. Yahoo may be rate-limiting this server. Retry in a few minutes.`,
+      );
+    } else if (results.length < symbols.length) {
+      extraNotes.push(
+        `ℹ Retrieved ${results.length} of ${symbols.length} symbols (some were skipped due to transient data errors).`,
+      );
+    }
+
+    const response: BacktestTop20Response = {
+      generatedAt: new Date().toISOString(),
+      yearsTested: years,
+      config: cfg,
+      results,
+      summary: {
+        totalTrades,
+        aggregateWinRate: Math.round(aggregateWinRate * 10) / 10,
+        aggregateAvgPnl: Math.round(aggregateAvgPnl * 100) / 100,
+        aggregateTotalPnl: Math.round(totalPnl * 100) / 100,
+        symbolsWithPositiveEdge,
+        symbolsWithNegativeEdge,
+        benchmarkSpyReturnPct,
+      },
+      methodology: [...extraNotes, ...METHODOLOGY_NOTES],
+    };
+
+    setBacktestCached(cacheKey, response);
+    res.json(response);
+  } catch (error) {
+    console.error("Unexpected error in /backtest/top20:", error);
+    // Never return HTML or a non-JSON body — always return a valid response
+    // shape so the client can render something useful.
+    res
+      .status(200)
+      .json(
+        emptyBacktestResponse(cfg, years, [
+          `⚠ Backtest failed unexpectedly on the server: ${(error as Error).message ?? "unknown error"}. See server logs for details.`,
+        ]),
+      );
+  }
+});
+
+// Backtest a single ticker (deep dive)
+router.get("/backtest/:ticker", async (req: Request, res: Response) => {
+  const ticker = req.params.ticker.toUpperCase();
+  const years = Math.max(
+    1,
+    Math.min(Number.parseFloat((req.query.years as string) || "2") || 2, 5)
+  );
+  const cfg = buildConfigFromQuery(req);
+  try {
+    const cacheKey = `bt:one:${ticker}:${years}:${JSON.stringify(cfg)}`;
+    const cached = getBacktestCached<any>(cacheKey);
+    if (cached) return res.json(cached);
+
+    const result = await backtestSymbol(ticker, cfg, years);
+    if (!result) {
+      return res.status(200).json({
+        generatedAt: new Date().toISOString(),
+        yearsTested: years,
+        config: cfg,
+        result: null,
+        methodology: [
+          `⚠ Not enough clean historical data for ${ticker} over ${years}y to build a backtest. Try a more liquid symbol or a shorter window.`,
+          ...METHODOLOGY_NOTES,
+        ],
+      });
+    }
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      yearsTested: years,
+      config: cfg,
+      result,
+      methodology: METHODOLOGY_NOTES,
+    };
+    setBacktestCached(cacheKey, payload);
+    res.json(payload);
+  } catch (error) {
+    console.error(`Error backtesting ${ticker}:`, error);
+    res.status(200).json({
+      generatedAt: new Date().toISOString(),
+      yearsTested: years,
+      config: cfg,
+      result: null,
+      methodology: [
+        `⚠ Server error running backtest for ${ticker}: ${(error as Error).message ?? "unknown"}.`,
+        ...METHODOLOGY_NOTES,
+      ],
+    });
   }
 });
 

@@ -250,6 +250,91 @@ export interface TickerAnalysis {
   frameworkAnalysis?: FrameworkAnalysis;
 }
 
+// Backtest result for a single simulated trade
+export interface BacktestTradeResult {
+  entryDate: string; // ISO date when position opened
+  exitDate: string; // ISO date when position closed (expiry / target hit / mgmt)
+  exitReason: "expiry" | "profit_target" | "dte_management" | "stop_loss";
+  daysHeld: number;
+  entryPrice: number; // Underlying price at entry
+  exitUnderlyingPrice: number; // Underlying price at exit
+  shortStrike: number;
+  longStrike: number;
+  creditReceived: number; // Per share
+  maxLoss: number; // Per share
+  pnl: number; // Dollar P&L (net, per 1 contract: *100)
+  pnlPct: number; // P&L as % of max loss (risk-adjusted)
+  isWin: boolean;
+  regime: "low_vol" | "normal_vol" | "high_vol"; // Based on 20d realized vol at entry
+  nearEarnings: boolean; // True if earnings date fell within holding window
+}
+
+// Aggregated stats for one symbol + strategy combo
+export interface BacktestSymbolResult {
+  symbol: string;
+  strategy: OptionStrategy;
+  strategyName: string;
+  tradesCount: number;
+  wins: number;
+  losses: number;
+  winRate: number; // 0-100
+  avgPnl: number; // $ per contract
+  totalPnl: number; // $ cumulative
+  avgWin: number;
+  avgLoss: number;
+  maxWin: number;
+  maxLoss: number;
+  profitFactor: number; // Gross wins / gross losses
+  sharpe: number; // Annualized on per-trade returns
+  maxDrawdown: number; // $ peak-to-trough on cumulative P&L
+  maxDrawdownPct: number; // % of peak cumulative
+  // Split by regime
+  earningsWinRate: number | null; // win rate on earnings-adjacent trades
+  earningsTradeCount: number;
+  nonEarningsWinRate: number;
+  nonEarningsTradeCount: number;
+  highVolWinRate: number | null;
+  lowVolWinRate: number | null;
+  // Benchmark
+  buyHoldReturnPct: number; // Buy & hold over same window for context
+  // Recommendation
+  historicalEdge: "strong" | "positive" | "flat" | "negative"; // Based on win rate + profit factor
+  recommendedConfig: BacktestConfig;
+  trades: BacktestTradeResult[]; // Full trade log (may be truncated for payload size)
+  startDate: string;
+  endDate: string;
+  priceAtEnd: number;
+}
+
+// Configuration used for a backtest run
+export interface BacktestConfig {
+  strategy: OptionStrategy;
+  dte: number;
+  targetDelta: number; // e.g. 30 = 30 delta short strike
+  spreadWidth: number; // points
+  takeProfitPct: number; // e.g. 50 = close at 50% of max profit
+  stopLossMult: number; // e.g. 2 = close if loss reaches 2x credit
+  entryFrequencyDays: number; // simulate a new entry every N trading days
+}
+
+// Response from /api/options/backtest/top20
+export interface BacktestTop20Response {
+  generatedAt: string;
+  yearsTested: number;
+  config: BacktestConfig;
+  results: BacktestSymbolResult[];
+  summary: {
+    totalTrades: number;
+    aggregateWinRate: number;
+    aggregateAvgPnl: number;
+    aggregateTotalPnl: number;
+    symbolsWithPositiveEdge: number;
+    symbolsWithNegativeEdge: number;
+    benchmarkSpyReturnPct: number | null;
+  };
+  methodology: string[]; // Bullet list of caveats shown to user
+}
+
 // Aggregated (multi-ticker) trade ideas for the "most active" list
 export interface TopOptionTradeIdea {
   symbol: string;

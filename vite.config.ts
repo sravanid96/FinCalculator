@@ -36,5 +36,7 @@ export default defineConfig({
       strict: true,
       deny: ["**/.*"],
     },
+    // Note: In this dev setup, Vite middlewareMode runs inside the Express server,
+    // so API and frontend share the same port. The server skips Vite for /api/*.
   },
 });

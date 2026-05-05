@@ -1,18 +1,68 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, Loader2, ListPlus, RefreshCcw, Shield, Activity } from "lucide-react";
+import {
+  ArrowUpRight,
+  Loader2,
+  ListPlus,
+  RefreshCcw,
+  Shield,
+  Activity,
+  AlertTriangle,
+  TrendingDown,
+  TrendingUp,
+  Filter,
+} from "lucide-react";
 import { addIdeaToWatchlist } from "@/components/options/IdeaWatchlistTab";
 import { fetchApi } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import type { TopOptionTradeIdea } from "@shared/optionsSchema";
+import type { TopOptionTradeIdea, BacktestSymbolResult } from "@shared/optionsSchema";
+import { STRATEGY_NAMES } from "@shared/optionsSchema";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 function fmtPct(n: number): string {
   const sign = n > 0 ? "+" : "";
   return `${sign}${n.toFixed(2)}%`;
+}
+
+// Calculate expected value based on historical performance
+function calculateExpectedValue(backtest: BacktestSymbolResult | undefined): number | null {
+  if (!backtest) return null;
+  return (backtest.winRate / 100) * backtest.avgWin + (1 - backtest.winRate / 100) * backtest.avgLoss;
+}
+
+// Calculate tradeability score (0-100)
+function calculateTradeabilityScore(backtest: BacktestSymbolResult | undefined): number | null {
+  if (!backtest) return null;
+  const winRateWeight = 0.4;
+  const profitFactorWeight = 0.3;
+  const sharpeWeight = 0.2;
+  const drawdownWeight = 0.1;
+
+  const winRateScore = Math.min(backtest.winRate, 100);
+  const profitFactorScore = Math.min((backtest.profitFactor / 2) * 100, 100);
+  const sharpeScore = Math.min(((backtest.sharpe + 1) / 3) * 100, 100);
+  const drawdownScore = Math.max(0, 100 - Math.abs(backtest.maxDrawdownPct));
+
+  return Math.round(
+    winRateScore * winRateWeight +
+      profitFactorScore * profitFactorWeight +
+      sharpeScore * sharpeWeight +
+      drawdownScore * drawdownWeight,
+  );
+}
+
+// Get position sizing recommendation based on historical drawdown
+function getPositionSize(backtest: BacktestSymbolResult | undefined): number {
+  if (!backtest) return 1;
+  if (backtest.maxDrawdownPct < -30) return 0.5;
+  if (backtest.maxDrawdownPct < -20) return 0.75;
+  return 1;
 }
 
 export function TopTradeIdeasTab({
@@ -22,6 +72,8 @@ export function TopTradeIdeasTab({
 }>) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [filterByEdge, setFilterByEdge] = useState(true);
+  const [hideNegativeEdge, setHideNegativeEdge] = useState(true);
 
   const addWatchMut = useMutation({
     mutationFn: async (row: TopOptionTradeIdea) => addIdeaToWatchlist(row.symbol, row.idea),
@@ -61,6 +113,81 @@ export function TopTradeIdeasTab({
     retry: 1,
   });
 
+  // Fetch backtest data for the exact symbols shown in the ideas list
+  const symbols = useMemo(() => data?.map((d) => d.symbol.toUpperCase()) || [], [data]);
+  const symbolsKey = useMemo(() => symbols.slice().sort().join(","), [symbols]);
+
+  const { data: backtestData, isLoading: backtestLoading } = useQuery<BacktestSymbolResult[]>({
+    queryKey: ["/api/options/backtest/top20", symbolsKey],
+    queryFn: async () => {
+      if (symbols.length === 0) return [];
+      const params = new URLSearchParams({
+        symbols: symbols.join(","), // Pass the exact symbols we need
+        strategy: "put_credit_spread",
+        years: "2",
+        delta: "30",
+        width: "5",
+        tp: "50",
+        freq: "5",
+      });
+      const res = await fetchApi(`/api/options/backtest/top20?${params.toString()}`);
+      if (!res.ok) {
+        // If backtest fails, return empty array so we can still show ideas
+        return [];
+      }
+      const json = await res.json();
+      return json.results || [];
+    },
+    enabled: symbols.length > 0,
+    staleTime: 24 * 60 * 60 * 1000, // Cache for 24 hours
+    retry: 0,
+  });
+
+  // Create a lookup map for backtest data
+  const backtestMap = useMemo(() => {
+    const map = new Map<string, BacktestSymbolResult>();
+    backtestData?.forEach((result) => {
+      map.set(result.symbol.toUpperCase(), result);
+    });
+    return map;
+  }, [backtestData]);
+
+  // Sort/filter data based on backtest results
+  const processedData = useMemo(() => {
+    if (!data) return [];
+
+    // First, filter out only the explicitly bad ones if that toggle is on
+    let filtered = data.filter((row) => {
+      const backtest = backtestMap.get(row.symbol.toUpperCase());
+      // Only hide if we have data showing it's a historical loser
+      if (hideNegativeEdge && backtest?.historicalEdge === "negative") return false;
+      return true;
+    });
+
+    // Then, sort by edge quality if prioritization is on
+    if (filterByEdge) {
+      filtered = [...filtered].sort((a, b) => {
+        const backtestA = backtestMap.get(a.symbol.toUpperCase());
+        const backtestB = backtestMap.get(b.symbol.toUpperCase());
+
+        const edgeOrder = { strong: 0, positive: 1, flat: 2, negative: 3 };
+        const edgeA = backtestA ? edgeOrder[backtestA.historicalEdge] : 4; // No data = last
+        const edgeB = backtestB ? edgeOrder[backtestB.historicalEdge] : 4;
+
+        // If edges are equal, sort by tradeability score
+        if (edgeA === edgeB) {
+          const scoreA = calculateTradeabilityScore(backtestA) || 0;
+          const scoreB = calculateTradeabilityScore(backtestB) || 0;
+          return scoreB - scoreA;
+        }
+
+        return edgeA - edgeB;
+      });
+    }
+
+    return filtered;
+  }, [data, backtestMap, filterByEdge, hideNegativeEdge]);
+
   const updatedAt = useMemo(() => {
     const ts = data?.[0]?.updatedAt;
     return ts ? new Date(ts) : null;
@@ -92,8 +219,53 @@ export function TopTradeIdeasTab({
             </div>
           </div>
           <div className="text-xs text-muted-foreground">
-            Ranked from Yahoo Finance “most actives”, then filtered to defined-risk credit trades with POP ≥ 60%
-            and decent options liquidity.
+            Ranked from Yahoo Finance "most actives", then filtered to defined-risk credit trades with POP ≥ 60%
+            and decent options liquidity. <strong>Historical edge filtering</strong> prioritizes symbols with proven
+            backtest performance.
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-4 rounded-lg bg-muted p-3">
+            <div className="flex items-center gap-2">
+              <Filter className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm font-medium">Filters:</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="filter-edge"
+                checked={filterByEdge}
+                onCheckedChange={setFilterByEdge}
+              />
+              <Label htmlFor="filter-edge" className="text-sm cursor-pointer">
+                Prioritize proven edge
+              </Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="hide-negative"
+                checked={hideNegativeEdge}
+                onCheckedChange={setHideNegativeEdge}
+              />
+              <Label htmlFor="hide-negative" className="text-sm cursor-pointer">
+                Hide historical losers
+              </Label>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              {backtestLoading && (
+                <Badge variant="outline" className="flex items-center gap-1">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Loading history...
+                </Badge>
+              )}
+              {!backtestLoading && backtestData && backtestData.length > 0 && (
+                <Badge variant="outline" className="text-emerald-600 border-emerald-300">
+                  {backtestData.length} with backtest
+                </Badge>
+              )}
+              {hideNegativeEdge && processedData.length < (data?.length || 0) && (
+                <Badge variant="secondary">
+                  {processedData.length} of {data?.length}
+                </Badge>
+              )}
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -115,7 +287,7 @@ export function TopTradeIdeasTab({
               className="w-full max-w-full overflow-x-auto overscroll-x-contain rounded-md"
               style={{ WebkitOverflowScrolling: "touch" }}
             >
-              <Table className="min-w-[1200px] whitespace-nowrap">
+              <Table className="min-w-[1400px] whitespace-nowrap">
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-[56px]">Rank</TableHead>
@@ -123,19 +295,21 @@ export function TopTradeIdeasTab({
                     <TableHead className="text-right">Price</TableHead>
                     <TableHead>Strategy</TableHead>
                     <TableHead>Setup</TableHead>
+                    <TableHead className="text-right">Hist Win%</TableHead>
+                    <TableHead className="text-right">Exp Value</TableHead>
+                    <TableHead>Edge</TableHead>
                     <TableHead>RSI</TableHead>
                     <TableHead>Earnings</TableHead>
                     <TableHead className="text-right">Score</TableHead>
                     <TableHead className="text-right">POP</TableHead>
                     <TableHead className="text-right">Credit</TableHead>
                     <TableHead className="text-right">Max loss</TableHead>
-                    <TableHead className="text-right">DTE</TableHead>
                     <TableHead className="text-right">Chg</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {(data || []).map((row, idx) => {
+                  {processedData.map((row, idx) => {
                     const idea = row.idea;
                     const credit = idea.entryPrice * 100;
                     const earningsText = idea.earningsDate ? idea.earningsDate : "—";
@@ -147,6 +321,10 @@ export function TopTradeIdeasTab({
                         : `${idea.legs.find((l) => l.action === "sell")?.strike} - ${
                             idea.legs.find((l) => l.action === "buy")?.strike
                           }`;
+                    const backtest = backtestMap.get(row.symbol.toUpperCase());
+                    const expectedValue = calculateExpectedValue(backtest);
+                    const tradeabilityScore = calculateTradeabilityScore(backtest);
+                    const positionSize = getPositionSize(backtest);
 
                     return (
                       <TableRow key={`${row.symbol}-${idea.id}`}>
@@ -158,6 +336,21 @@ export function TopTradeIdeasTab({
                               <Badge variant="secondary" className="text-[10px]">
                                 Liq {row.liquidityScore}
                               </Badge>
+                              {positionSize < 1 && (
+                                <TooltipProvider>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <AlertTriangle className="h-3.5 w-3.5 text-yellow-500" />
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p className="max-w-xs text-xs">
+                                        High historical drawdown ({backtest?.maxDrawdownPct.toFixed(0)}%).
+                                        Consider {positionSize === 0.5 ? "half" : "reduced"} position size.
+                                      </p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              )}
                             </div>
                             <span className="truncate text-xs text-muted-foreground">{row.name}</span>
                           </div>
@@ -169,6 +362,68 @@ export function TopTradeIdeasTab({
                           </Badge>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">{setup}</TableCell>
+                        <TableCell className="text-right">
+                          {backtest ? (
+                            <div className="flex flex-col items-end">
+                              <span
+                                className={backtest.winRate >= 55 ? "text-emerald-600 font-medium" : ""}
+                              >
+                                {backtest.winRate.toFixed(0)}%
+                              </span>
+                              <span className="text-[10px] text-muted-foreground">
+                                {backtest.tradesCount} trades
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {expectedValue !== null ? (
+                            <span className={expectedValue > 0 ? "text-emerald-600" : "text-red-600"}>
+                              ${expectedValue.toFixed(0)}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {backtest ? (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Badge
+                                    variant="outline"
+                                    className={`text-[10px] cursor-help ${
+                                      backtest.historicalEdge === "strong"
+                                        ? "border-emerald-400 text-emerald-600"
+                                        : backtest.historicalEdge === "positive"
+                                          ? "border-blue-400 text-blue-600"
+                                          : backtest.historicalEdge === "negative"
+                                            ? "border-red-400 text-red-600"
+                                            : "border-yellow-400 text-yellow-600"
+                                    }`}
+                                  >
+                                    {tradeabilityScore || "—"}
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="max-w-xs">
+                                  <div className="space-y-1 text-xs">
+                                    <p className="font-medium">
+                                      Historical Edge: {backtest.historicalEdge.replace("_", " ")}
+                                    </p>
+                                    <p>Win Rate: {backtest.winRate.toFixed(1)}%</p>
+                                    <p>Profit Factor: {backtest.profitFactor.toFixed(2)}</p>
+                                    <p>Sharpe: {backtest.sharpe.toFixed(2)}</p>
+                                    <p>Max DD: {backtest.maxDrawdownPct.toFixed(1)}%</p>
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                         <TableCell>
                           {idea.rsiAnalysis ? (
                             <div className="flex items-center gap-1">
