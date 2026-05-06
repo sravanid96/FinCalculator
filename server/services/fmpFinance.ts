@@ -74,6 +74,11 @@ function pickFirstNumber(obj: any, keys: string[]): number | null {
   return null;
 }
 
+function setIfNonNull<T extends object, K extends keyof T>(obj: T, key: K, value: any) {
+  const nv = n(value);
+  if (nv !== null) (obj as any)[key] = nv;
+}
+
 /**
  * Returns a partial Fundamentals object filled from FMP.
  * Never throws; returns null if no key or data unavailable.
@@ -124,59 +129,63 @@ export async function getFmpFundamentals(symbol: string): Promise<
   if (typeof name === "string" && name.trim()) out.name = name.trim();
 
   // Price / market cap / 52w high
-  out.price = pickFirstNumber(quote, ["price", "lastPrice", "regularMarketPrice"]);
-  out.marketCap = pickFirstNumber(quote, ["marketCap"]);
-  out.high52Week = pickFirstNumber(quote, ["yearHigh", "fiftyTwoWeekHigh", "52WeekHigh"]);
+  setIfNonNull(out, "price", pickFirstNumber(quote, ["price", "lastPrice", "regularMarketPrice"]));
+  setIfNonNull(out, "marketCap", pickFirstNumber(quote, ["marketCap"]));
+  setIfNonNull(out, "high52Week", pickFirstNumber(quote, ["yearHigh", "fiftyTwoWeekHigh", "52WeekHigh"]));
 
   // P/E + EPS
-  out.trailingPE = pickFirstNumber(quote, ["pe", "trailingPE", "priceEarningsRatio"]);
-  out.trailingEps = pickFirstNumber(quote, ["eps", "epsTTM", "trailingEps", "epsTrailingTwelveMonths"]);
+  setIfNonNull(out, "trailingPE", pickFirstNumber(quote, ["pe", "trailingPE", "priceEarningsRatio"]));
+  setIfNonNull(out, "trailingEps", pickFirstNumber(quote, ["eps", "epsTTM", "trailingEps", "epsTrailingTwelveMonths"]));
   // FMP doesn't always give forward EPS/PE for free. If absent, leave null.
-  out.forwardPE = pickFirstNumber(quote, ["peForward", "forwardPE", "forwardPe"]);
-  out.forwardEps = pickFirstNumber(quote, ["epsForward", "forwardEps"]);
+  setIfNonNull(out, "forwardPE", pickFirstNumber(quote, ["peForward", "forwardPE", "forwardPe"]));
+  setIfNonNull(out, "forwardEps", pickFirstNumber(quote, ["epsForward", "forwardEps"]));
 
   // Shares outstanding
-  out.sharesOutstanding = pickFirstNumber(quote, ["sharesOutstanding"]);
+  setIfNonNull(out, "sharesOutstanding", pickFirstNumber(quote, ["sharesOutstanding"]));
 
   // Revenue + growth (TTM)
-  out.ttmRevenue = pickFirstNumber(inc, ["revenue", "revenueTTM", "totalRevenue"]);
-  out.revenueGrowthYoy = pickFirstNumber(ratios, ["revenueGrowthTTM", "revenueGrowth", "revenueGrowthYoy"]);
+  setIfNonNull(out, "ttmRevenue", pickFirstNumber(inc, ["revenue", "revenueTTM", "totalRevenue"]));
+  setIfNonNull(out, "revenueGrowthYoy", pickFirstNumber(ratios, ["revenueGrowthTTM", "revenueGrowth", "revenueGrowthYoy"]));
 
   // FCF + margins (TTM)
   const fcf = pickFirstNumber(cf, ["freeCashFlow", "freeCashFlowTTM", "freeCashFlowTtm", "freeCashFlowPerShareTTM"]);
   if (fcf !== null) out.fcf = fcf;
-  if (out.fcf !== undefined && out.fcf !== null && out.ttmRevenue && out.ttmRevenue > 0) {
+  if (out.fcf !== undefined && out.fcf !== null && out.ttmRevenue !== undefined && out.ttmRevenue !== null && out.ttmRevenue > 0) {
     out.fcfMargin = out.fcf / out.ttmRevenue;
   }
 
   // ROIC (TTM) — field names vary; try common ones.
-  out.roic = pickFirstNumber(ratios, [
+  setIfNonNull(out, "roic", pickFirstNumber(ratios, [
     "returnOnInvestedCapitalTTM",
     "roicTTM",
     "roic",
     "returnOnCapitalEmployedTTM",
-  ]);
+  ]));
 
   // P/B + EV/Sales + EBITDA margin (TTM)
-  out.priceToBook = pickFirstNumber(ratios, ["priceToBookRatioTTM", "priceToBookRatio", "pbRatioTTM", "pbRatio"]);
-  out.evToSales = pickFirstNumber(ratios, ["enterpriseValueMultipleTTM", "evToSalesTTM", "enterpriseValueToSales"]);
+  setIfNonNull(out, "priceToBook", pickFirstNumber(ratios, ["priceToBookRatioTTM", "priceToBookRatio", "pbRatioTTM", "pbRatio"]));
+  setIfNonNull(out, "evToSales", pickFirstNumber(ratios, ["enterpriseValueMultipleTTM", "evToSalesTTM", "enterpriseValueToSales"]));
   const ebitdaMargin = pickFirstNumber(ratios, ["ebitdaMarginTTM", "ebitdaMargin"]);
   if (ebitdaMargin !== null) out.ebitdaMargin = ebitdaMargin;
 
   // Derived: pct off 52w high
-  if (out.price !== null && out.high52Week !== null && out.high52Week > 0) {
+  if (out.price !== undefined && out.high52Week !== undefined && out.price !== null && out.high52Week !== null && out.high52Week > 0) {
     out.pctOff52WeekHigh = (out.price - out.high52Week) / out.high52Week;
   }
 
   // If we got nothing useful, don't cache empties (allows recovery after quota/key fixes).
   const anyValue =
-    out.price !== undefined ||
-    out.high52Week !== undefined ||
-    out.trailingPE !== undefined ||
-    out.marketCap !== undefined ||
-    out.ttmRevenue !== undefined;
+    out.price != null ||
+    out.high52Week != null ||
+    out.trailingPE != null ||
+    out.marketCap != null ||
+    out.ttmRevenue != null;
   if (!anyValue) {
-    return { fundamentals: {}, error: error ?? "FMP returned no data (possible quota/key issue)." };
+    const shapeHint = `quote=${Array.isArray(quoteResp) ? quoteResp.length : typeof quoteResp}, profile=${Array.isArray(profileResp) ? profileResp.length : typeof profileResp}`;
+    return {
+      fundamentals: {},
+      error: error ?? `FMP returned no usable data (possible quota/key issue). (${shapeHint})`,
+    };
   }
 
   cacheSet(cacheKey, out);
