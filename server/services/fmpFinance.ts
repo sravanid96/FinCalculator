@@ -39,9 +39,20 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
 
 async function fetchJson(url: string, ms = 8000): Promise<any | null> {
   const r = await withTimeout(
-    fetch(url, { headers: { Accept: "application/json" } }).then((res) =>
-      res.ok ? res.json() : null
-    ),
+    fetch(url, { headers: { Accept: "application/json" } }).then(async (res) => {
+      // FMP often returns useful error bodies on non-2xx (e.g. invalid key, quota).
+      // Always try to parse the body so we can surface a real error.
+      const status = res.status;
+      const text = await res.text();
+      try {
+        const json = JSON.parse(text);
+        if (res.ok) return json;
+        return { __httpStatus: status, __httpError: true, ...json };
+      } catch {
+        if (res.ok) return null;
+        return { __httpStatus: status, __httpError: true, message: text.slice(0, 220) };
+      }
+    }),
     ms
   );
   return r ?? null;
@@ -53,8 +64,16 @@ function extractFmpError(payload: any): string | null {
   // Common FMP error shapes:
   // { "Error Message": "Invalid API KEY." }
   // { "error": "..." } / { "message": "..." }
-  const em = payload["Error Message"] ?? payload.error ?? payload.message;
-  if (typeof em === "string" && em.trim()) return em.trim().slice(0, 180);
+  const em = payload["Error Message"] ?? payload.error ?? payload.message ?? payload["Error"] ?? payload["errorMessage"];
+  if (typeof em === "string" && em.trim()) {
+    const status = typeof payload.__httpStatus === "number" ? `HTTP ${payload.__httpStatus}: ` : "";
+    return `${status}${em.trim()}`.slice(0, 220);
+  }
+  // If it looks like an HTTP wrapper but no message, show keys for debugging.
+  if (payload.__httpError && typeof payload.__httpStatus === "number") {
+    const keys = Object.keys(payload).filter((k) => !k.startsWith("__")).slice(0, 8);
+    return `HTTP ${payload.__httpStatus}: Unrecognized FMP error shape (keys: ${keys.join(", ") || "none"})`.slice(0, 220);
+  }
   return null;
 }
 
@@ -88,7 +107,7 @@ export async function getFmpFundamentals(symbol: string): Promise<
 > {
   const sym = symbol.toUpperCase();
   if (!FMP_KEY) return null;
-  const cacheKey = `fmpFund:v1:${sym}`;
+  const cacheKey = `fmpFund:v2:${sym}`;
   const hit = cacheGet(cacheKey);
   if (hit) return { fundamentals: hit, error: null };
 
