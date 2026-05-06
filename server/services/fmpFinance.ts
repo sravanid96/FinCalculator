@@ -113,9 +113,10 @@ export async function getFmpFundamentals(symbol: string): Promise<
   const hit = cacheGet(cacheKey);
   if (hit) return { fundamentals: hit, error: null };
 
-  // Keep request count low: quote + ratios-ttm + cash-flow-ttm + income-ttm.
-  // Stable endpoints use query params (symbol=) instead of path params.
-  const quoteUrl = `${FMP_BASE}/quote?symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(FMP_KEY)}`;
+  // Keep request count low and avoid premium endpoints.
+  // NOTE: FMP's stable /quote can return HTTP 402 ("Premium Query Parameter: symbol").
+  // /quote-short is the free-friendly alternative for current price.
+  const quoteUrl = `${FMP_BASE}/quote-short?symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(FMP_KEY)}`;
   const profileUrl = `${FMP_BASE}/profile?symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(FMP_KEY)}`;
   const ratiosTtmUrl = `${FMP_BASE}/ratios-ttm?symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(FMP_KEY)}`;
   const cashflowTtmUrl = `${FMP_BASE}/cash-flow-statement-ttm?symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(FMP_KEY)}`;
@@ -151,6 +152,7 @@ export async function getFmpFundamentals(symbol: string): Promise<
   if (typeof name === "string" && name.trim()) out.name = name.trim();
 
   // Price / market cap / 52w high
+  // quote-short shape is typically { symbol, price, volume }.
   setIfNonNull(out, "price", pickFirstNumber(quote, ["price", "lastPrice", "regularMarketPrice"]));
   setIfNonNull(out, "marketCap", pickFirstNumber(quote, ["marketCap"]));
   setIfNonNull(out, "high52Week", pickFirstNumber(quote, ["yearHigh", "fiftyTwoWeekHigh", "52WeekHigh"]));

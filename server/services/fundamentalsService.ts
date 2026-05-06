@@ -1,5 +1,6 @@
 import * as YahooFinanceNS from "yahoo-finance2";
 import { getFmpFundamentals } from "./fmpFinance";
+import { getFinnhubSnapshot } from "./finnhubFinance";
 
 const YahooFinanceCtor: any =
   (YahooFinanceNS as any).default?.default ?? (YahooFinanceNS as any).default ?? YahooFinanceNS;
@@ -265,6 +266,39 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
       notes.push(
         `Yahoo snapshot missing fields; FMP fallback unavailable.${fmpResp?.error ? ` (FMP error: ${fmpResp.error})` : " (missing key or API error)."}`
       );
+    }
+  }
+
+  // If snapshot fields are still missing, fall back to Finnhub (often works on Render).
+  const stillMissingSnapshot =
+    (out.price === null ? 1 : 0) +
+    (out.high52Week === null ? 1 : 0) +
+    (out.trailingPE === null ? 1 : 0) +
+    (out.marketCap === null ? 1 : 0);
+
+  if (stillMissingSnapshot >= 2) {
+    const fin = await getFinnhubSnapshot(symbol);
+    if (fin?.fundamentals) {
+      notes.push(
+        `Snapshot fallback: filled from Finnhub where available.${fin.error ? ` (Finnhub note: ${fin.error})` : ""}`
+      );
+      const ff = fin.fundamentals;
+      out.marketCap = out.marketCap ?? ff.marketCap ?? null;
+      out.price = out.price ?? ff.price ?? null;
+      out.high52Week = out.high52Week ?? ff.high52Week ?? null;
+      out.trailingPE = out.trailingPE ?? ff.trailingPE ?? null;
+      out.sharesOutstanding = out.sharesOutstanding ?? ff.sharesOutstanding ?? null;
+      if (out.pctOff52WeekHigh === null) out.pctOff52WeekHigh = ff.pctOff52WeekHigh ?? null;
+      if (
+        out.pctOff52WeekHigh === null &&
+        out.price !== null &&
+        out.high52Week !== null &&
+        out.high52Week > 0
+      ) {
+        out.pctOff52WeekHigh = (out.price - out.high52Week) / out.high52Week;
+      }
+    } else {
+      notes.push(`Snapshot fallback: Finnhub unavailable.${fin?.error ? ` (Finnhub error: ${fin.error})` : ""}`);
     }
   }
 
