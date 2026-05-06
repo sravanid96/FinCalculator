@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { getFundamentalsBatch } from "./services/fundamentalsService";
+import { getFundamentals, getFundamentalsBatch } from "./services/fundamentalsService";
 import {
   scoreQualityDiscount,
   rankQualityDiscount,
@@ -9,6 +9,12 @@ import {
 import { UNIVERSES, listUniverses } from "./services/screenerUniverses";
 import { getTreasury10YieldPercent, getEtfValuationSnapshot } from "./services/yahooFinance";
 import { buildMarketCalibration, getAnchorEtfForUniverse } from "./services/marketCalibrationService";
+import {
+  getCompareData,
+  intersectPeers,
+  compareDataSourceStatus,
+} from "./services/compareDataService";
+import { computePriceTargets } from "./services/priceTargetService";
 
 const router = Router();
 
@@ -186,6 +192,90 @@ router.get("/cyclical-trough", async (req: Request, res: Response) => {
   } catch (e) {
     console.error("cyclical-trough screener error:", e);
     res.status(500).json({ error: "Screener failed", message: (e as Error).message });
+  }
+});
+
+// =============================================================================
+// Compare endpoint — side-by-side, multi-source for two tickers.
+// =============================================================================
+// Reuses the screener's fundamentals + price-target + market calibration so the
+// comparison stays consistent with what the user sees on the Screener tab.
+
+router.get("/compare/sources", (_req: Request, res: Response) => {
+  res.json(compareDataSourceStatus());
+});
+
+router.get("/compare/:a/:b", async (req: Request, res: Response) => {
+  const a = req.params.a.toUpperCase();
+  const b = req.params.b.toUpperCase();
+  if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(a) || !/^[A-Z][A-Z0-9.\-]{0,9}$/.test(b)) {
+    return res.status(400).json({ error: "Invalid ticker format" });
+  }
+  if (a === b) {
+    return res.status(400).json({ error: "Pick two different tickers." });
+  }
+
+  const cacheKey = `compare:v1:${a}:${b}`;
+  const hit = cached<any>(cacheKey);
+  if (hit) return res.json(hit);
+
+  try {
+    // Macro calibration for the price-target stack (custom universe = no sector ETF anchor)
+    const tnx = await getTreasury10YieldPercent();
+    const calibration = buildMarketCalibration(null, tnx, null);
+
+    // Pull all tickers' multi-source data + screener-style fundamentals in parallel
+    const [aCompare, bCompare, aFund, bFund] = await Promise.all([
+      getCompareData(a),
+      getCompareData(b),
+      getFundamentals(a),
+      getFundamentals(b),
+    ]);
+
+    const aScored = scoreQualityDiscount(aFund);
+    const bScored = scoreQualityDiscount(bFund);
+    const aTargets = computePriceTargets(aFund, calibration);
+    const bTargets = computePriceTargets(bFund, calibration);
+
+    const peers = intersectPeers([aCompare, bCompare]);
+
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      cacheTtlSeconds: TTL / 1000,
+      sources: compareDataSourceStatus(),
+      calibration,
+      tickers: [
+        {
+          symbol: a,
+          fundamentals: aFund,
+          score: aScored,
+          priceTargets: aTargets,
+          compare: aCompare,
+        },
+        {
+          symbol: b,
+          fundamentals: bFund,
+          score: bScored,
+          priceTargets: bTargets,
+          compare: bCompare,
+        },
+      ],
+      peers,
+      methodology: [
+        "Multi-source comparison: Yahoo (always on) + FMP (forward revenue + peers) + Finnhub (peers + filtered news) + SEC EDGAR (10-K Item 1 Business excerpt).",
+        "Each source is wrapped with a timeout and falls back to null/`unavailable` independently — partial answers are normal.",
+        "Forward revenue numbers are ANALYST CONSENSUS, not forecasts. They lag big strategic shifts (new products, contract wins) by months.",
+        "Peer lists from FMP/Finnhub/Yahoo are heuristics — peers shown in ≥2 sources surface as 'consensus peers' (real overlap).",
+        "10-K Item 1 is annual; product launches between filings won't appear there. Cross-check against Finnhub news headlines.",
+        "If FMP/Finnhub keys are not configured, those sections show 'unavailable' with a note — sign up free at financialmodelingprep.com / finnhub.io and add FMP_API_KEY / FINNHUB_API_KEY to your environment.",
+      ],
+    };
+
+    setCache(cacheKey, payload);
+    res.json(payload);
+  } catch (e) {
+    console.error("compare endpoint error:", e);
+    res.status(500).json({ error: "Compare failed", message: (e as Error).message });
   }
 });
 

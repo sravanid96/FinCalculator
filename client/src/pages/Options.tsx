@@ -16,6 +16,7 @@ import {
   Bookmark,
   BarChart2,
   Filter,
+  GitCompareArrows,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +37,7 @@ import { IdeaWatchlistTab, addIdeaToWatchlist } from "@/components/options/IdeaW
 import { BacktestTab } from "@/components/options/BacktestTab";
 import { BacktestSummary } from "@/components/options/BacktestSummary";
 import { ScreenerTab } from "@/components/options/ScreenerTab";
+import { CompareTab } from "@/components/options/CompareTab";
 import { useToast } from "@/hooks/use-toast";
 import type { TickerAnalysis, TradeIdea } from "@shared/optionsSchema";
 
@@ -45,7 +47,7 @@ export default function Options() {
   const [selectedTicker, setSelectedTicker] = useState<string>("");
   const [selectedTrade, setSelectedTrade] = useState<TradeIdea | null>(null);
   const [activeTab, setActiveTab] = useState<
-    "analysis" | "ideas" | "backtest" | "screener" | "watchlist" | "framework" | "journal"
+    "analysis" | "ideas" | "backtest" | "screener" | "compare" | "watchlist" | "framework" | "journal"
   >("analysis");
 
   const addWatchMut = useMutation({
@@ -95,7 +97,7 @@ export default function Options() {
       </div>
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="space-y-6">
-        <TabsList className="grid w-full max-w-5xl grid-cols-7">
+        <TabsList className="grid w-full max-w-6xl grid-cols-8">
           <TabsTrigger value="analysis" className="gap-1.5">
             <BarChart3 className="h-4 w-4" />
             Analysis
@@ -111,6 +113,10 @@ export default function Options() {
           <TabsTrigger value="screener" className="gap-1.5">
             <Filter className="h-4 w-4" />
             Screener
+          </TabsTrigger>
+          <TabsTrigger value="compare" className="gap-1.5">
+            <GitCompareArrows className="h-4 w-4" />
+            Compare
           </TabsTrigger>
           <TabsTrigger value="watchlist" className="gap-1.5">
             <Bookmark className="h-4 w-4" />
@@ -384,6 +390,10 @@ export default function Options() {
 
         <TabsContent value="screener" className="mt-0 space-y-6">
           <ScreenerTab />
+        </TabsContent>
+
+        <TabsContent value="compare" className="mt-0 space-y-6">
+          <CompareTab />
         </TabsContent>
 
         <TabsContent value="watchlist" className="mt-0 space-y-6">
