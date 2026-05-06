@@ -85,52 +85,56 @@ export default function Options() {
   }, []);
 
   return (
-    <div className="space-y-6 p-4 sm:p-8">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="space-y-4 p-3 sm:space-y-6 sm:p-8">
+      <div className="flex flex-col gap-2 sm:gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Options Trading</h1>
-          <p className="text-muted-foreground">
+          <h1 className="text-2xl sm:text-3xl font-bold">Options Trading</h1>
+          <p className="text-xs sm:text-sm text-muted-foreground">
             Analysis tools, a decision framework for any market, and a trade journal with performance
             stats
           </p>
         </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="space-y-6">
-        <TabsList className="grid w-full max-w-6xl grid-cols-8">
-          <TabsTrigger value="analysis" className="gap-1.5">
-            <BarChart3 className="h-4 w-4" />
-            Analysis
-          </TabsTrigger>
-          <TabsTrigger value="ideas" className="gap-1.5">
-            <Shield className="h-4 w-4" />
-            Ideas
-          </TabsTrigger>
-          <TabsTrigger value="backtest" className="gap-1.5">
-            <BarChart2 className="h-4 w-4" />
-            Backtest
-          </TabsTrigger>
-          <TabsTrigger value="screener" className="gap-1.5">
-            <Filter className="h-4 w-4" />
-            Screener
-          </TabsTrigger>
-          <TabsTrigger value="compare" className="gap-1.5">
-            <GitCompareArrows className="h-4 w-4" />
-            Compare
-          </TabsTrigger>
-          <TabsTrigger value="watchlist" className="gap-1.5">
-            <Bookmark className="h-4 w-4" />
-            Watchlist
-          </TabsTrigger>
-          <TabsTrigger value="framework" className="gap-1.5">
-            <BookOpen className="h-4 w-4" />
-            Framework
-          </TabsTrigger>
-          <TabsTrigger value="journal" className="gap-1.5">
-            <ClipboardList className="h-4 w-4" />
-            Trade log
-          </TabsTrigger>
-        </TabsList>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="space-y-4 sm:space-y-6">
+        {/* Mobile: horizontal scroll. Desktop: 8-col grid. */}
+        <div className="-mx-3 overflow-x-auto px-3 sm:mx-0 sm:overflow-visible sm:px-0">
+          <TabsList className="inline-flex w-max gap-1 sm:grid sm:w-full sm:max-w-6xl sm:grid-cols-8 sm:gap-0">
+            <TabsTrigger value="analysis" className="gap-1.5 whitespace-nowrap">
+              <BarChart3 className="h-4 w-4" />
+              <span>Analysis</span>
+            </TabsTrigger>
+            <TabsTrigger value="ideas" className="gap-1.5 whitespace-nowrap">
+              <Shield className="h-4 w-4" />
+              <span>Ideas</span>
+            </TabsTrigger>
+            <TabsTrigger value="backtest" className="gap-1.5 whitespace-nowrap">
+              <BarChart2 className="h-4 w-4" />
+              <span>Backtest</span>
+            </TabsTrigger>
+            <TabsTrigger value="screener" className="gap-1.5 whitespace-nowrap">
+              <Filter className="h-4 w-4" />
+              <span>Screener</span>
+            </TabsTrigger>
+            <TabsTrigger value="compare" className="gap-1.5 whitespace-nowrap">
+              <GitCompareArrows className="h-4 w-4" />
+              <span>Compare</span>
+            </TabsTrigger>
+            <TabsTrigger value="watchlist" className="gap-1.5 whitespace-nowrap">
+              <Bookmark className="h-4 w-4" />
+              <span>Watchlist</span>
+            </TabsTrigger>
+            <TabsTrigger value="framework" className="gap-1.5 whitespace-nowrap">
+              <BookOpen className="h-4 w-4" />
+              <span>Framework</span>
+            </TabsTrigger>
+            <TabsTrigger value="journal" className="gap-1.5 whitespace-nowrap">
+              <ClipboardList className="h-4 w-4" />
+              <span className="hidden xs:inline">Trade log</span>
+              <span className="inline xs:hidden">Log</span>
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="analysis" className="mt-0 space-y-6">
           <Card>

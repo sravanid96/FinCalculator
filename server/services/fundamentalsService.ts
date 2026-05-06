@@ -1,4 +1,5 @@
 import * as YahooFinanceNS from "yahoo-finance2";
+import { getFmpFundamentals } from "./fmpFinance";
 
 const YahooFinanceCtor: any =
   (YahooFinanceNS as any).default?.default ?? (YahooFinanceNS as any).default ?? YahooFinanceNS;
@@ -215,6 +216,50 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     if (fdFcf !== null) {
       out.fcf = fdFcf;
       if (fdRevenue && fdRevenue > 0) out.fcfMargin = fdFcf / fdRevenue;
+    }
+  }
+
+  // If Yahoo is blocked (common on Render), key fields come back null. Fall back to FMP.
+  // We only call FMP when at least 2 critical snapshot fields are missing.
+  const missingCritical =
+    (out.price === null ? 1 : 0) +
+    (out.high52Week === null ? 1 : 0) +
+    (out.forwardPE === null ? 1 : 0) +
+    (out.trailingPE === null ? 1 : 0) +
+    (out.marketCap === null ? 1 : 0);
+
+  if (missingCritical >= 2) {
+    const fmp = await getFmpFundamentals(symbol);
+    if (fmp) {
+      notes.push("Yahoo snapshot missing fields — filled from FMP where available.");
+      // Merge-only-when-null: prefer Yahoo when present.
+      out.name = out.name || fmp.name || out.name;
+      out.marketCap = out.marketCap ?? fmp.marketCap ?? null;
+      out.price = out.price ?? fmp.price ?? null;
+      out.high52Week = out.high52Week ?? fmp.high52Week ?? null;
+      if (out.pctOff52WeekHigh === null) out.pctOff52WeekHigh = fmp.pctOff52WeekHigh ?? null;
+
+      out.trailingPE = out.trailingPE ?? fmp.trailingPE ?? null;
+      out.forwardPE = out.forwardPE ?? fmp.forwardPE ?? null;
+      out.trailingEps = out.trailingEps ?? fmp.trailingEps ?? null;
+      out.forwardEps = out.forwardEps ?? fmp.forwardEps ?? null;
+      out.sharesOutstanding = out.sharesOutstanding ?? fmp.sharesOutstanding ?? null;
+
+      out.ttmRevenue = out.ttmRevenue ?? fmp.ttmRevenue ?? null;
+      out.revenueGrowthYoy = out.revenueGrowthYoy ?? fmp.revenueGrowthYoy ?? null;
+      out.fcf = out.fcf ?? fmp.fcf ?? null;
+      out.fcfMargin = out.fcfMargin ?? fmp.fcfMargin ?? null;
+      out.roic = out.roic ?? fmp.roic ?? null;
+      out.priceToBook = out.priceToBook ?? fmp.priceToBook ?? null;
+      out.evToSales = out.evToSales ?? fmp.evToSales ?? null;
+      out.ebitdaMargin = out.ebitdaMargin ?? fmp.ebitdaMargin ?? null;
+
+      // Recompute derived pctOff52w if we now have price + high.
+      if (out.pctOff52WeekHigh === null && out.price !== null && out.high52Week !== null && out.high52Week > 0) {
+        out.pctOff52WeekHigh = (out.price - out.high52Week) / out.high52Week;
+      }
+    } else {
+      notes.push("Yahoo snapshot missing fields; FMP fallback unavailable (missing key or API error).");
     }
   }
 

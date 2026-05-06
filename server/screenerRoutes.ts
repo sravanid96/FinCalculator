@@ -97,7 +97,7 @@ router.get("/quality-discount", async (req: Request, res: Response) => {
       : null;
   const calibration = buildMarketCalibration(universeMeta?.id ?? null, tnx, sectorSnap);
   const fpeKey = sectorSnap?.forwardPE != null ? sectorSnap.forwardPE.toFixed(1) : "na";
-  const cacheKey = `qd:v7:${universeMeta?.id ?? "CUST"}:${tnx?.toFixed(2) ?? "na"}:${fpeKey}:${tickers.join(",")}`;
+  const cacheKey = `qd:v8:${universeMeta?.id ?? "CUST"}:${tnx?.toFixed(2) ?? "na"}:${fpeKey}:${tickers.join(",")}`;
   const hit = cached<any>(cacheKey);
   if (hit) return res.json(hit);
 
@@ -215,7 +215,7 @@ router.get("/compare/:a/:b", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "Pick two different tickers." });
   }
 
-  const cacheKey = `compare:v1:${a}:${b}`;
+  const cacheKey = `compare:v2:${a}:${b}`;
   const hit = cached<any>(cacheKey);
   if (hit) return res.json(hit);
 

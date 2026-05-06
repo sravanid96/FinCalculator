@@ -438,7 +438,7 @@ export function ScreenerTab() {
 
             {!useCustom ? (
               <Select value={universeId} onValueChange={setUniverseId}>
-                <SelectTrigger className="w-[260px]">
+                <SelectTrigger className="w-full sm:w-[260px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -571,9 +571,9 @@ function QualityResults({ data }: { data: QualityResponse }) {
       <Card>
         <CardContent className="p-0 overflow-x-auto">
           <p className="px-4 pt-3 pb-1 text-[11px] text-muted-foreground">
-            Hover dotted underlines on column headers, numbers, and price-stack labels for definitions.
+            Hover dotted underlines on headers and values for definitions. Swipe horizontally on mobile.
           </p>
-          <Table>
+          <Table className="min-w-[1100px]">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-12">#</TableHead>
@@ -706,9 +706,9 @@ function CyclicalResults({ data }: { data: CyclicalResponse }) {
       <Card>
         <CardContent className="p-0 overflow-x-auto">
           <p className="px-4 pt-3 pb-1 text-[11px] text-muted-foreground">
-            Hover dotted underlines on headers and values for definitions.
+            Hover dotted underlines on headers and values for definitions. Swipe horizontally on mobile.
           </p>
-          <Table>
+          <Table className="min-w-[900px]">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-12">#</TableHead>

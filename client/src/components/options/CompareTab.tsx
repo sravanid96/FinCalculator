@@ -28,6 +28,11 @@ interface PriceTargets {
   dcfFairValue: number | null;
   blendedFairValue: number | null;
   blendedImpliedUpsidePct: number | null;
+  epsUsedForBands: number | null;
+  epsBasis: "forward" | "trailing" | "midCycle" | "none";
+  cyclicalEarningsDetected: boolean;
+  multipleBandsReliable: boolean;
+  warnings: string[];
 }
 
 interface ScoreSlice {
@@ -321,7 +326,7 @@ function CompareResults({ data }: { data: CompareResponse }) {
       {/* Header summary */}
       <Card>
         <CardContent className="py-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4">
             {[tA, tB].map((t) => (
               <div key={t.symbol} className="space-y-1">
                 <div className="flex items-baseline justify-between gap-2">
@@ -349,8 +354,8 @@ function CompareResults({ data }: { data: CompareResponse }) {
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Fundamentals (Yahoo TTM / latest annual)</CardTitle>
         </CardHeader>
-        <CardContent>
-          <table className="w-full">
+        <CardContent className="overflow-x-auto">
+          <table className="w-full min-w-[420px]">
             <thead>
               <tr className="border-b text-[10px] uppercase tracking-wide text-muted-foreground">
                 <th className="text-left py-1 pr-2">Metric</th>
@@ -428,8 +433,8 @@ function CompareResults({ data }: { data: CompareResponse }) {
             Same six checks the Screener uses. ✓ pass · ✗ fail · — insufficient data.
           </p>
         </CardHeader>
-        <CardContent>
-          <table className="w-full">
+        <CardContent className="overflow-x-auto">
+          <table className="w-full min-w-[380px]">
             <thead>
               <tr className="border-b text-[10px] uppercase tracking-wide text-muted-foreground">
                 <th className="text-left py-1 pr-2">Gate</th>
@@ -465,9 +470,26 @@ function CompareResults({ data }: { data: CompareResponse }) {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Price targets · Fair value</CardTitle>
+          {(tA.priceTargets.warnings?.length || tB.priceTargets.warnings?.length) ? (
+            <div className="mt-2 space-y-1">
+              {[tA, tB].map((t) =>
+                (t.priceTargets.warnings || []).map((w, i) => (
+                  <div
+                    key={`${t.symbol}-${i}`}
+                    className="flex items-start gap-1.5 rounded border border-amber-400/60 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700"
+                  >
+                    <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                    <span>
+                      <span className="font-mono font-semibold">{t.symbol}:</span> {w}
+                    </span>
+                  </div>
+                )),
+              )}
+            </div>
+          ) : null}
         </CardHeader>
-        <CardContent>
-          <table className="w-full">
+        <CardContent className="overflow-x-auto">
+          <table className="w-full min-w-[480px]">
             <thead>
               <tr className="border-b text-[10px] uppercase tracking-wide text-muted-foreground">
                 <th className="text-left py-1 pr-2">Method</th>
@@ -497,7 +519,13 @@ function CompareResults({ data }: { data: CompareResponse }) {
                 label="Bear / Base / Bull"
                 a={`${fmtUsd(tA.priceTargets.bearFairValue)} / ${fmtUsd(tA.priceTargets.baseFairValue)} / ${fmtUsd(tA.priceTargets.bullFairValue)}`}
                 b={`${fmtUsd(tB.priceTargets.bearFairValue)} / ${fmtUsd(tB.priceTargets.baseFairValue)} / ${fmtUsd(tB.priceTargets.bullFairValue)}`}
-                hint="Forward EPS × calibrated multiples. Anchors only."
+                hint="EPS × calibrated multiples. For cyclicals (e.g. memory) we automatically swap to mid-cycle EPS = √(forward × trailing) and tighten multiples."
+              />
+              <StatRow
+                label="EPS basis used"
+                a={`${tA.priceTargets.epsBasis}${tA.priceTargets.epsUsedForBands ? ` ($${tA.priceTargets.epsUsedForBands.toFixed(2)})` : ""}`}
+                b={`${tB.priceTargets.epsBasis}${tB.priceTargets.epsUsedForBands ? ` ($${tB.priceTargets.epsUsedForBands.toFixed(2)})` : ""}`}
+                hint="forward = stable name, midCycle = cyclical (√(fwd×ttm) used), trailing = no forward available."
               />
               <StatRow
                 label="Simple DCF"
@@ -525,7 +553,7 @@ function CompareResults({ data }: { data: CompareResponse }) {
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {[tA, tB].map((t) => (
               <div key={t.symbol}>
                 <div className="font-mono text-xs font-semibold mb-1">{t.symbol}</div>
@@ -598,7 +626,7 @@ function CompareResults({ data }: { data: CompareResponse }) {
             against news headlines below.
           </p>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {[tA, tB].map((t) => (
             <div key={t.symbol} className="space-y-2">
               <div className="font-mono text-xs font-semibold">{t.symbol}</div>
@@ -653,7 +681,7 @@ function CompareResults({ data }: { data: CompareResponse }) {
             patent, FDA, trial, contract, deal. Headlines only — verify the source.
           </p>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <CardContent className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {[tA, tB].map((t) => (
             <div key={t.symbol} className="space-y-1.5">
               <div className="font-mono text-xs font-semibold">{t.symbol}</div>
@@ -715,7 +743,7 @@ function CompareResults({ data }: { data: CompareResponse }) {
               </div>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {[tA, tB].map((t) => (
               <div key={t.symbol}>
                 <div className="font-mono text-xs font-semibold mb-1">{t.symbol} peers (any source)</div>
