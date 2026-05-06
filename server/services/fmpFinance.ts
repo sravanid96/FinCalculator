@@ -12,7 +12,9 @@
 import type { Fundamentals } from "./fundamentalsService";
 
 const FMP_KEY = (process.env.FMP_API_KEY || "").trim();
-const FMP_BASE = "https://financialmodelingprep.com/api";
+// FMP migrated new/free keys to "stable" endpoints. Legacy /api/v3 endpoints
+// can return HTTP 403 ("Legacy Endpoint") unless you're on an older paid plan.
+const FMP_BASE = "https://financialmodelingprep.com/stable";
 
 const TTL_MS = 6 * 60 * 60 * 1000; // 6h — fundamentals are not tick-by-tick
 const cache = new Map<string, { ts: number; data: Partial<Fundamentals> }>();
@@ -111,12 +113,13 @@ export async function getFmpFundamentals(symbol: string): Promise<
   const hit = cacheGet(cacheKey);
   if (hit) return { fundamentals: hit, error: null };
 
-  // Keep request count low: quote + ratios-ttm + cash-flow-ttm are usually enough.
-  const quoteUrl = `${FMP_BASE}/v3/quote/${encodeURIComponent(sym)}?apikey=${encodeURIComponent(FMP_KEY)}`;
-  const profileUrl = `${FMP_BASE}/v3/profile/${encodeURIComponent(sym)}?apikey=${encodeURIComponent(FMP_KEY)}`;
-  const ratiosTtmUrl = `${FMP_BASE}/v3/ratios-ttm/${encodeURIComponent(sym)}?apikey=${encodeURIComponent(FMP_KEY)}`;
-  const cashflowTtmUrl = `${FMP_BASE}/v3/cash-flow-statement-ttm/${encodeURIComponent(sym)}?apikey=${encodeURIComponent(FMP_KEY)}`;
-  const incomeTtmUrl = `${FMP_BASE}/v3/income-statement-ttm/${encodeURIComponent(sym)}?apikey=${encodeURIComponent(FMP_KEY)}`;
+  // Keep request count low: quote + ratios-ttm + cash-flow-ttm + income-ttm.
+  // Stable endpoints use query params (symbol=) instead of path params.
+  const quoteUrl = `${FMP_BASE}/quote?symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(FMP_KEY)}`;
+  const profileUrl = `${FMP_BASE}/profile?symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(FMP_KEY)}`;
+  const ratiosTtmUrl = `${FMP_BASE}/ratios-ttm?symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(FMP_KEY)}`;
+  const cashflowTtmUrl = `${FMP_BASE}/cash-flow-statement-ttm?symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(FMP_KEY)}`;
+  const incomeTtmUrl = `${FMP_BASE}/income-statement-ttm?symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(FMP_KEY)}`;
 
   const [quoteResp, profileResp, ratiosResp, cfResp, incResp] = await Promise.all([
     fetchJson(quoteUrl),
