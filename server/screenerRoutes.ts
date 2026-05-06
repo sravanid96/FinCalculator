@@ -15,6 +15,7 @@ import {
   compareDataSourceStatus,
 } from "./services/compareDataService";
 import { computePriceTargets } from "./services/priceTargetService";
+import { fmpStatus } from "./services/fmpFinance";
 
 const router = Router();
 
@@ -29,6 +30,40 @@ function cached<T>(key: string): T | null {
 function setCache(key: string, data: any) {
   cache.set(key, { data, timestamp: Date.now() });
 }
+
+// =============================================================================
+// Debug helpers (safe to expose; no secrets returned)
+// =============================================================================
+router.get("/debug/env", (_req: Request, res: Response) => {
+  res.json({
+    now: new Date().toISOString(),
+    fmp: fmpStatus(),
+    finnhubConfigured: !!process.env.FINNHUB_API_KEY,
+    edgarUserAgentConfigured: !!process.env.EDGAR_USER_AGENT,
+  });
+});
+
+router.get("/debug/fundamentals/:symbol", async (req: Request, res: Response) => {
+  const symbol = String(req.params.symbol || "").toUpperCase();
+  if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(symbol)) {
+    return res.status(400).json({ error: "Invalid ticker format" });
+  }
+  try {
+    const f = await getFundamentals(symbol);
+    res.json({
+      symbol,
+      fundamentals: f,
+      fmp: fmpStatus(),
+      hints: [
+        "If price / 52w / forwardPE are null in production but not locally, Yahoo is likely blocking your cloud IP.",
+        "If fmp.configured=false on Render, set FMP_API_KEY in Render dashboard env vars and redeploy.",
+        "If f.notes mention an FMP error (invalid key / limit reach), fix the key or upgrade quota.",
+      ],
+    });
+  } catch (e) {
+    res.status(500).json({ error: "Failed to fetch fundamentals", message: (e as Error).message });
+  }
+});
 
 router.get("/universes", (_req, res) => {
   res.json(listUniverses());

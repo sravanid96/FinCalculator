@@ -47,6 +47,17 @@ async function fetchJson(url: string, ms = 8000): Promise<any | null> {
   return r ?? null;
 }
 
+function extractFmpError(payload: any): string | null {
+  if (!payload) return null;
+  if (typeof payload === "string") return payload.slice(0, 180);
+  // Common FMP error shapes:
+  // { "Error Message": "Invalid API KEY." }
+  // { "error": "..." } / { "message": "..." }
+  const em = payload["Error Message"] ?? payload.error ?? payload.message;
+  if (typeof em === "string" && em.trim()) return em.trim().slice(0, 180);
+  return null;
+}
+
 function n(v: any): number | null {
   if (v === null || v === undefined) return null;
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -67,12 +78,14 @@ function pickFirstNumber(obj: any, keys: string[]): number | null {
  * Returns a partial Fundamentals object filled from FMP.
  * Never throws; returns null if no key or data unavailable.
  */
-export async function getFmpFundamentals(symbol: string): Promise<Partial<Fundamentals> | null> {
+export async function getFmpFundamentals(symbol: string): Promise<
+  { fundamentals: Partial<Fundamentals>; error: string | null } | null
+> {
   const sym = symbol.toUpperCase();
   if (!FMP_KEY) return null;
   const cacheKey = `fmpFund:v1:${sym}`;
   const hit = cacheGet(cacheKey);
-  if (hit) return hit;
+  if (hit) return { fundamentals: hit, error: null };
 
   // Keep request count low: quote + ratios-ttm + cash-flow-ttm are usually enough.
   const quoteUrl = `${FMP_BASE}/v3/quote/${encodeURIComponent(sym)}?apikey=${encodeURIComponent(FMP_KEY)}`;
@@ -88,6 +101,15 @@ export async function getFmpFundamentals(symbol: string): Promise<Partial<Fundam
     fetchJson(cashflowTtmUrl),
     fetchJson(incomeTtmUrl),
   ]);
+
+  const errs = [
+    extractFmpError(quoteResp),
+    extractFmpError(profileResp),
+    extractFmpError(ratiosResp),
+    extractFmpError(cfResp),
+    extractFmpError(incResp),
+  ].filter((x): x is string => !!x);
+  const error = errs.length > 0 ? errs[0] : null;
 
   const quote = Array.isArray(quoteResp) ? quoteResp[0] : null;
   const profile = Array.isArray(profileResp) ? profileResp[0] : null;
@@ -146,8 +168,19 @@ export async function getFmpFundamentals(symbol: string): Promise<Partial<Fundam
     out.pctOff52WeekHigh = (out.price - out.high52Week) / out.high52Week;
   }
 
+  // If we got nothing useful, don't cache empties (allows recovery after quota/key fixes).
+  const anyValue =
+    out.price !== undefined ||
+    out.high52Week !== undefined ||
+    out.trailingPE !== undefined ||
+    out.marketCap !== undefined ||
+    out.ttmRevenue !== undefined;
+  if (!anyValue) {
+    return { fundamentals: {}, error: error ?? "FMP returned no data (possible quota/key issue)." };
+  }
+
   cacheSet(cacheKey, out);
-  return out;
+  return { fundamentals: out, error };
 }
 
 export function fmpStatus() {

@@ -229,9 +229,12 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     (out.marketCap === null ? 1 : 0);
 
   if (missingCritical >= 2) {
-    const fmp = await getFmpFundamentals(symbol);
-    if (fmp) {
-      notes.push("Yahoo snapshot missing fields — filled from FMP where available.");
+    const fmpResp = await getFmpFundamentals(symbol);
+    const fmp = fmpResp?.fundamentals ?? null;
+    if (fmpResp && fmp) {
+      notes.push(
+        `Yahoo snapshot missing fields — filled from FMP where available.${fmpResp.error ? ` (FMP note: ${fmpResp.error})` : ""}`
+      );
       // Merge-only-when-null: prefer Yahoo when present.
       out.name = out.name || fmp.name || out.name;
       out.marketCap = out.marketCap ?? fmp.marketCap ?? null;
@@ -259,7 +262,9 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
         out.pctOff52WeekHigh = (out.price - out.high52Week) / out.high52Week;
       }
     } else {
-      notes.push("Yahoo snapshot missing fields; FMP fallback unavailable (missing key or API error).");
+      notes.push(
+        `Yahoo snapshot missing fields; FMP fallback unavailable.${fmpResp?.error ? ` (FMP error: ${fmpResp.error})` : " (missing key or API error)."}`
+      );
     }
   }
 
