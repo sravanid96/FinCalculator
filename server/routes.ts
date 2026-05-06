@@ -17,6 +17,7 @@ import multer from "multer";
 import { parse } from "csv-parse/sync";
 import { eq } from "drizzle-orm";
 import optionsRoutes from "./optionsRoutes";
+import screenerRoutes from "./screenerRoutes";
 import optionsWatchlistRoutes from "./optionsWatchlistRoutes";
 import healthRoutes from "./healthRoutes";
 // pdf-parse will be loaded dynamically
@@ -84,6 +85,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Watchlist must mount before /api/options so /api/options/watchlist is not swallowed by the options router
   app.use("/api/options/watchlist", isAuthenticated, optionsWatchlistRoutes);
   app.use("/api/options", optionsRoutes);
+  app.use("/api/screener", screenerRoutes);
 
   // Register health routes (auth required, local DB only)
   app.use("/api/health", healthRoutes);

@@ -22,6 +22,7 @@ type YFScreener = any;
 const cache = new Map<string, { data: any; timestamp: number }>();
 const CACHE_TTL = 60 * 1000; // 1 minute cache for real-time data
 const HISTORICAL_CACHE_TTL = 5 * 60 * 1000; // 5 minutes for historical
+const TNX_CACHE_TTL = 5 * 60 * 1000; // 5 minutes — macro moves slower than quotes
 
 /** When Yahoo screener/search fails (common from datacenter IPs), top-ideas still has a universe. */
 const FALLBACK_MOST_ACTIVES: { symbol: string; name: string }[] = [
@@ -75,6 +76,70 @@ function getCached<T>(key: string, ttl: number = CACHE_TTL): T | null {
 
 function setCache(key: string, data: any): void {
   cache.set(key, { data, timestamp: Date.now() });
+}
+
+/**
+ * US 10-year Treasury yield % (e.g. 4.25) from Yahoo symbol ^TNX.
+ * Used to re-calibrate DCF discount and EPS multiple bands in the screener.
+ */
+export async function getTreasury10YieldPercent(): Promise<number | null> {
+  const cacheKey = "macro:^TNX";
+  const cached = getCached<number>(cacheKey, TNX_CACHE_TTL);
+  if (cached !== null) return cached;
+
+  try {
+    const quote: YFQuote = await yahooFinance.quote("^TNX");
+    const v = quote.regularMarketPrice ?? quote.regularMarketPreviousClose;
+    if (typeof v === "number" && Number.isFinite(v) && v > 0 && v < 25) {
+      setCache(cacheKey, v);
+      return v;
+    }
+  } catch (e) {
+    console.warn("getTreasury10YieldPercent:", (e as Error).message);
+  }
+  return null;
+}
+
+const ETF_VAL_TTL = 15 * 60 * 1000;
+
+function qnum(v: any): number | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "object" && typeof v.raw === "number" && Number.isFinite(v.raw)) return v.raw;
+  return null;
+}
+
+/** Forward / trailing P/E on a sector ETF (SMH, SOXX, IGV, …) from Yahoo quoteSummary. */
+export interface EtfValuationSnapshot {
+  symbol: string;
+  forwardPE: number | null;
+  trailingPE: number | null;
+}
+
+export async function getEtfValuationSnapshot(symbol: string): Promise<EtfValuationSnapshot> {
+  const sym = symbol.replace(/^\^/, "").toUpperCase();
+  const cacheKey = `etf:pe:${sym}`;
+  const cached = getCached<EtfValuationSnapshot>(cacheKey, ETF_VAL_TTL);
+  if (cached) return cached;
+
+  const empty: EtfValuationSnapshot = { symbol: sym, forwardPE: null, trailingPE: null };
+  try {
+    const summary: any = await yahooFinance.quoteSummary(
+      sym,
+      { modules: ["summaryDetail", "defaultKeyStatistics"] },
+      { validateResult: false }
+    );
+    const sd = summary?.summaryDetail ?? {};
+    const ks = summary?.defaultKeyStatistics ?? {};
+    const forwardPE = qnum(sd.forwardPE) ?? qnum(ks.forwardPE);
+    const trailingPE = qnum(sd.trailingPE) ?? qnum(ks.trailingPE);
+    const out: EtfValuationSnapshot = { symbol: sym, forwardPE, trailingPE };
+    setCache(cacheKey, out);
+    return out;
+  } catch (e) {
+    console.warn(`getEtfValuationSnapshot ${sym}:`, (e as Error).message);
+    return empty;
+  }
 }
 
 export async function getStockQuote(symbol: string): Promise<StockQuote> {
