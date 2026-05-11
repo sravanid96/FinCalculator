@@ -240,6 +240,42 @@ export async function getHistoricalPrices(
   return result;
 }
 
+/**
+ * Equity put/call volume ratio from Yahoo’s **nearest** expiration only (total put vol / total call vol).
+ * Thin or zero call volume → null. Cached briefly to avoid hammering options on screener refresh.
+ */
+export async function getPutCallVolumeRatioNearTerm(symbol: string): Promise<number | null> {
+  const sym = symbol.toUpperCase();
+  const cacheKey = `pcr:${sym}`;
+  const cached = getCached<number>(cacheKey, 3 * 60 * 1000);
+  if (cached !== null && Number.isFinite(cached)) return cached;
+
+  try {
+    const summary: YFOptions = await yahooFinance.options(sym);
+    const rawDates: any[] = summary?.expirationDates || [];
+    if (!rawDates.length) return null;
+
+    const first = rawDates[0];
+    const chain: YFOptions = await yahooFinance.options(sym, { date: first });
+    const block = chain?.options?.[0];
+    const calls: any[] = block?.calls || [];
+    const puts: any[] = block?.puts || [];
+    let callVol = 0;
+    let putVol = 0;
+    for (const c of calls) callVol += Number(c?.volume) || 0;
+    for (const p of puts) putVol += Number(p?.volume) || 0;
+    if (callVol <= 0) return null;
+
+    const ratio = putVol / callVol;
+    if (!Number.isFinite(ratio) || ratio < 0) return null;
+    setCache(cacheKey, ratio);
+    return ratio;
+  } catch (e) {
+    console.warn(`getPutCallVolumeRatioNearTerm(${sym}):`, (e as Error).message);
+    return null;
+  }
+}
+
 export async function getOptionsChain(symbol: string): Promise<OptionsChain> {
   const cacheKey = `options:${symbol}`;
   const cached = getCached<OptionsChain>(cacheKey);

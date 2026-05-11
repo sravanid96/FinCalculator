@@ -1,6 +1,11 @@
 import type { Fundamentals } from "./fundamentalsService";
 import { computePriceTargets, type PriceTargets } from "./priceTargetService";
 import type { MarketCalibration } from "./marketCalibrationService";
+import {
+  effectiveLeverageCaps,
+  mapStrategicBucket,
+  type StrategicBucketId,
+} from "./strategicBucketService";
 
 export type Tier = "BEST" | "STRONG" | "WATCH" | "AVOID";
 
@@ -27,11 +32,17 @@ export interface QualityDiscountRow {
     off52wMin15: boolean | null;
     fwdPELessThanTrailing: boolean | null;
   };
+  // Earnings-informed action label (simple rules; not investment advice).
+  action: "ENTRY" | "HOLD" | "EXIT";
+  actionChecklist: Array<{ label: string; pass: boolean | null; detail?: string | null }>;
+  actionWhy: string;
   thesisHook: string;          // long-term role description (curated, stable)
   dynamicHook: string;          // data-derived snapshot built from current fundamentals
   priceTargets: PriceTargets;  // analyst consensus + multiple bands + simple DCF
   currentPrice: number | null;
   insufficientFlags: string[]; // which fields were null
+  strategicBucketId: StrategicBucketId;
+  strategicBucketLabel: string;
 }
 
 const tierFor = (s: number): Tier =>
@@ -73,6 +84,162 @@ export function scoreQualityDiscount(f: Fundamentals): Omit<QualityDiscountRow, 
 
   const score = qualityPoints + discountPoints;
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // Earnings action (ENTRY/HOLD/EXIT)
+  // Rule: use latest reported EPS beat + QoQ EPS/revenue momentum.
+  // - ENTRY: good tier (BEST/STRONG), EPS beat, and (EPS up QoQ OR revenue up QoQ)
+  // - EXIT: EPS miss AND (EPS down QoQ OR revenue down QoQ) OR leverage red flag (netDebt/EBITDA >= 4)
+  // - HOLD: everything else / insufficient data
+  // Note: We intentionally avoid “guidance” since Yahoo quoteSummary doesn’t provide it reliably.
+  const bucket = mapStrategicBucket(f);
+  const { entryMaxLeverage, exitLeverage, maintenanceApplied, capexToEbitda } = effectiveLeverageCaps(f, bucket);
+
+  const epsSurprise = f.earnings?.eps?.latest?.surprisePct ?? null;
+  const epsQoq = f.earnings?.epsQoqGrowth ?? null;
+  const revQoq = f.earnings?.revenue?.qoqGrowth ?? null;
+  const grossDeltaPp = f.earnings?.margins?.grossMarginDeltaPp ?? null;
+
+  // Thresholds (noise-filter):
+  // ENTRY: EPS surprise >= +5%, EPS QoQ >= +10%, revenue QoQ >= +10%, and leverage below entry cap
+  // EXIT: EPS surprise <= -3% AND revenue QoQ < 0 (double-miss proxy) OR gross margin down >200 bps QoQ OR leverage above exit cap
+  const epsBeat5 = epsSurprise === null ? null : epsSurprise >= 0.05;
+  const epsMiss3 = epsSurprise === null ? null : epsSurprise <= -0.03;
+  const epsGrow10 = epsQoq === null ? null : epsQoq >= 0.10;
+  const revGrow10 = revQoq === null ? null : revQoq >= 0.10;
+  const revNegative = revQoq === null ? null : revQoq < 0;
+  const grossMarginDown200bp = grossDeltaPp === null ? null : grossDeltaPp <= -2.0;
+  const leverageOkForEntry = f.netDebtToEbitda === null ? null : f.netDebtToEbitda < entryMaxLeverage;
+  const leverageExit = f.netDebtToEbitda === null ? null : f.netDebtToEbitda >= exitLeverage;
+
+  // Valuation cutoff: forward P/E > 20% above its 5y average => don't ENTRY (at most HOLD).
+  const fpeOver20Pct = f.forwardPE === null || f.forwardPe5yAvg === null
+    ? null
+    : f.forwardPe5yAvg > 0 && f.forwardPE > 1.2 * f.forwardPe5yAvg;
+
+  // Stress tests (best-effort proxies) — thresholds from strategic bucket.
+  const fcfConv = f.fcfConversion;
+  const fcfFloor = bucket.fcfConversionEntryMin;
+  const fcfConvOkForEntry =
+    fcfFloor === null ? null : fcfConv === null ? null : fcfConv >= fcfFloor;
+  const dscr = f.dscrApprox;
+  const dscrFloor = bucket.dscrFloor;
+  const dscrOk = dscr === null ? null : dscr >= dscrFloor;
+  const payback = f.impliedPaybackYears;
+  const paybackMax = bucket.paybackMaxYears;
+  const paybackOk =
+    paybackMax === null ? null : payback === null ? null : payback <= paybackMax;
+  const tier = tierFor(score);
+  const tierOk = tier === "BEST" || tier === "STRONG";
+
+  let action: QualityDiscountRow["action"] = "HOLD";
+  const hardExit =
+    leverageExit === true ||
+    grossMarginDown200bp === true ||
+    (epsMiss3 === true && revNegative === true); // double miss proxy
+  const entryOk =
+    tierOk &&
+    leverageOkForEntry === true &&
+    epsBeat5 === true &&
+    epsGrow10 === true &&
+    revGrow10 === true &&
+    fpeOver20Pct !== true &&
+    (fcfConvOkForEntry !== false) &&
+    dscrOk !== false &&
+    paybackOk !== false;
+  if (hardExit) action = "EXIT";
+  else if (entryOk) action = "ENTRY";
+
+  const actionChecklist: QualityDiscountRow["actionChecklist"] = [
+    { label: "Tier is BEST/STRONG", pass: tierOk, detail: tier },
+    {
+      label: "EPS surprise ≥ +5%",
+      pass: epsBeat5,
+      detail: epsSurprise === null ? null : `${(epsSurprise * 100).toFixed(1)}% (${f.earnings?.eps?.latest?.quarterEnd ?? ""})`,
+    },
+    {
+      label: "EPS QoQ growth ≥ +10%",
+      pass: epsGrow10,
+      detail: epsQoq === null ? null : `${(epsQoq * 100).toFixed(1)}%`,
+    },
+    {
+      label: "Revenue QoQ growth ≥ +10%",
+      pass: revGrow10,
+      detail: revQoq === null ? null : `${(revQoq * 100).toFixed(1)}%`,
+    },
+    {
+      label: "Forward P/E not >20% above 5y avg",
+      pass: fpeOver20Pct === null ? null : !fpeOver20Pct,
+      detail:
+        f.forwardPE === null || f.forwardPe5yAvg === null
+          ? null
+          : `Fwd ${f.forwardPE.toFixed(1)} vs 5y avg ${f.forwardPe5yAvg.toFixed(1)}`,
+    },
+    {
+      label: `NetDebt/EBITDA < ${entryMaxLeverage.toFixed(1)}x (bucket entry cap)`,
+      pass: leverageOkForEntry,
+      detail:
+        f.netDebtToEbitda === null
+          ? null
+          : `${f.netDebtToEbitda.toFixed(2)}x · exit red-flag ≥${exitLeverage.toFixed(1)}x · ${bucket.label}${
+              maintenanceApplied && capexToEbitda != null
+                ? ` · high CapEx/EBITDA (${(capexToEbitda * 100).toFixed(0)}%) tightened cap`
+                : ""
+            }`,
+    },
+    {
+      label: `DSCR proxy (FCF/Interest) ≥ ${dscrFloor.toFixed(1)}x`,
+      pass: dscrOk,
+      detail: dscr === null ? null : `${dscr.toFixed(2)}x`,
+    },
+    {
+      label:
+        fcfFloor === null
+          ? "FCF/EBITDA entry floor (not required for this bucket)"
+          : `FCF/EBITDA ≥ ${(fcfFloor * 100).toFixed(0)}% (${bucket.label})`,
+      pass: fcfConvOkForEntry,
+      detail: fcfConv === null ? null : `${(fcfConv * 100).toFixed(0)}%`,
+    },
+    {
+      label:
+        paybackMax === null
+          ? "Debt/FCF payback cap (not required for this bucket)"
+          : `Debt/FCF payback ≤ ${paybackMax}y (${bucket.label})`,
+      pass: paybackOk,
+      detail: payback === null ? null : `${payback.toFixed(1)}y`,
+    },
+    {
+      label: "Gross margin not down >200 bps QoQ",
+      pass: grossMarginDown200bp === null ? null : !grossMarginDown200bp,
+      detail: grossDeltaPp === null ? null : `${grossDeltaPp.toFixed(2)} pp`,
+    },
+  ];
+
+  const fmtPct = (v: number | null, digits = 1) =>
+    v === null || Number.isNaN(v) ? null : `${(v * 100).toFixed(digits)}%`;
+
+  let actionWhy = "Mixed/insufficient confirmation vs cutoffs (needs clean beat + QoQ acceleration).";
+  if (action === "ENTRY") {
+    actionWhy =
+      `EPS surprise ${fmtPct(epsSurprise, 1)} (≥5%) · ` +
+      `EPS QoQ ${fmtPct(epsQoq, 1)} (≥10%) · ` +
+      `Rev QoQ ${fmtPct(revQoq, 1)} (≥10%) · ` +
+      `NetDebt/EBITDA ${f.netDebtToEbitda?.toFixed(2) ?? "—"}x (<${entryMaxLeverage.toFixed(1)}x · ${bucket.label})`;
+  } else if (action === "EXIT") {
+    const bits: string[] = [];
+    if (leverageExit === true) bits.push(`Leverage ≥${exitLeverage.toFixed(1)}x (${f.netDebtToEbitda?.toFixed(2)}x)`);
+    if (grossMarginDown200bp === true) bits.push(`Gross margin down ${grossDeltaPp?.toFixed(2)}pp`);
+    if (epsMiss3 === true && revNegative === true) bits.push(`EPS miss ${fmtPct(epsSurprise, 1)} + Rev QoQ ${fmtPct(revQoq, 1)}`);
+    actionWhy = bits.join(" · ") || "Fundamentals deteriorated vs exit cutoffs.";
+  } else {
+    const bits: string[] = [];
+    if (epsSurprise !== null) bits.push(`EPS surprise ${fmtPct(epsSurprise, 1)}`);
+    if (epsQoq !== null) bits.push(`EPS QoQ ${fmtPct(epsQoq, 1)}`);
+    if (revQoq !== null) bits.push(`Rev QoQ ${fmtPct(revQoq, 1)}`);
+    if (grossDeltaPp !== null) bits.push(`GM Δ ${grossDeltaPp.toFixed(2)}pp`);
+    if (f.netDebtToEbitda !== null) bits.push(`ND/EBITDA ${f.netDebtToEbitda.toFixed(2)}x`);
+    actionWhy = bits.join(" · ") || actionWhy;
+  }
+
   return {
     symbol: f.symbol,
     name: f.name,
@@ -88,7 +255,12 @@ export function scoreQualityDiscount(f: Fundamentals): Omit<QualityDiscountRow, 
     score,
     tier: tierFor(score),
     passes,
+    action,
+    actionChecklist,
+    actionWhy,
     insufficientFlags,
+    strategicBucketId: bucket.id,
+    strategicBucketLabel: bucket.label,
   };
 }
 
@@ -157,6 +329,8 @@ export function buildDynamicHook(f: import("./fundamentalsService").Fundamentals
 const EMPTY_FUNDAMENTALS: import("./fundamentalsService").Fundamentals = {
   symbol: "",
   name: "",
+  sector: null,
+  industry: null,
   marketCap: null,
   price: null,
   high52Week: null,
@@ -168,6 +342,7 @@ const EMPTY_FUNDAMENTALS: import("./fundamentalsService").Fundamentals = {
   revenueGrowthYoy: null,
   trailingPE: null,
   forwardPE: null,
+  forwardPe5yAvg: null,
   priceToBook: null,
   evToSales: null,
   ebitdaMargin: null,
@@ -181,6 +356,22 @@ const EMPTY_FUNDAMENTALS: import("./fundamentalsService").Fundamentals = {
   trailingEps: null,
   sharesOutstanding: null,
   ttmRevenue: null,
+  ttmEbitda: null,
+  ttmOperatingCashFlow: null,
+  ttmCapex: null,
+  ttmInterestExpense: null,
+  totalDebt: null,
+  cashAndEquivalents: null,
+  dscrApprox: null,
+  impliedPaybackYears: null,
+  fcfConversion: null,
+  earnings: {
+    eps: { latest: null, prior: null },
+    epsQoqGrowth: null,
+    revenue: { latest: null, prior: null, qoqGrowth: null },
+    margins: { latest: null, prior: null, grossMarginDeltaPp: null, operatingMarginDeltaPp: null },
+    notes: [],
+  },
   notes: [],
 };
 

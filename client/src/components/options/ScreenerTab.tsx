@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, RefreshCcw, Info, AlertTriangle, Search } from "lucide-react";
+import { Loader2, RefreshCcw, Info, AlertTriangle, Search, CheckCircle2, XCircle, MinusCircle } from "lucide-react";
 import { fetchApi } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -73,6 +73,20 @@ const H = {
   pb: "Price-to-book: market cap ÷ book equity (Yahoo). Low P/B in cyclicals can mean distress or a trough; context matters.",
   evSales: "Enterprise value ÷ revenue (Yahoo). Lower often means cheaper vs sales; compare within sector.",
   ebitdaMgn: "EBITDA ÷ revenue (trailing, Yahoo). Compression can signal a margin cycle low; very high margins reduce trough score in this screen.",
+  action:
+    "Entry/Hold/Exit: rules-based label driven by latest reported quarter vs prior (EPS beat + QoQ EPS/revenue momentum) plus leverage, DSCR, and bucket-specific stress tests. It updates on refresh. It’s a tactical label, not a forecast.",
+  bucket:
+    "Strategic bucket: coarse map from Yahoo sector + industry (industrial vs defensive SaaS vs AI infra vs apps). Sets net-debt/EBITDA entry and exit caps, DSCR floor, and optional FCF conversion or payback rules for ENTRY. Heuristic only — verify the classification.",
+  buyZone:
+    "Buy band (technical): min–max of Keltner lower (SMA20−2×ATR) and low-anchored VWAP. Raw anchor values are in this tooltip. Legacy heuristic buy band is listed separately below.",
+  sellTrigger:
+    "Sell band (technical): min–max of Keltner upper (SMA20+2×ATR) and high-anchored VWAP (anchors in tooltip). Below: RSI/PCR — green only if PCR < 0.5 and RSI ≤ 70; otherwise that block is red.",
+  valueZone:
+    "Value zone (fundamental): min–max of Graham V = EPS×(8.5+2g) (g = YoY revenue growth as whole %, clipped 0–12) and FinCal’s simple per-share DCF. If one leg is missing, shows the other only. Not a full multi-stage DCF.",
+  upsideRR:
+    "Upside % vs last price: Blended = weighted analyst + base multiple + DCF (when used). Bull = EPS-band bull fair value vs price. Both are mechanical; bull can embed optimistic multiples.",
+  downsideRR:
+    "Downside % vs last price: Blend = drop to reach blended fair value when price is above blended. Bear / Low = same vs bear EPS-band and Yahoo analyst low when price is above those anchors. When EPS bands are missing, Blend is often the only anchor. Not VaR or tail risk.",
 } as const;
 
 /** Map each bullet in the Live line to the right glossary entry (split on " • "). */
@@ -178,6 +192,26 @@ interface PriceTargets {
   dcfFairValue: number | null;
   blendedFairValue: number | null;
   blendedImpliedUpsidePct: number | null;
+  valueZoneLow: number | null;
+  valueZoneHigh: number | null;
+  buyZoneLow: number | null;
+  buyZoneHigh: number | null;
+  impliedUpsideToBullPct: number | null;
+  impliedDownsideToBearFairValuePct: number | null;
+  impliedDownsideToAnalystLowPct: number | null;
+  impliedDownsideToBlendedFairValuePct: number | null;
+  grahamIntrinsicValue: number | null;
+  grahamGrowthPercentUsed: number | null;
+  valueZoneFundamentalLow: number | null;
+  valueZoneFundamentalHigh: number | null;
+  buyZoneKeltnerLower: number | null;
+  buyZoneAnchoredVwap: number | null;
+  sellZoneKeltnerUpper: number | null;
+  sellZoneAnchoredVwap: number | null;
+  rsi14: number | null;
+  rsiSellTrigger: boolean;
+  putCallRatio: number | null;
+  pcrSellTrigger: boolean;
   asOf: string;
   methodNotes: string[];
   calibration?: {
@@ -197,10 +231,22 @@ interface PriceTargets {
   };
 }
 
+type StrategicBucketId =
+  | "TIER1_INDUSTRIAL"
+  | "TIER2_DEFENSIVE_SAAS"
+  | "TIER3_AI_INFRA"
+  | "TIER4_AI_APPS"
+  | "OTHER";
+
 interface QualityRow {
   rank: number;
   symbol: string;
   name: string;
+  strategicBucketId: StrategicBucketId;
+  strategicBucketLabel: string;
+  action: "ENTRY" | "HOLD" | "EXIT";
+  actionChecklist: Array<{ label: string; pass: boolean | null; detail?: string | null }>;
+  actionWhy: string;
   roic: number | null;
   fcfMargin: number | null;
   netDebtToEbitda: number | null;
@@ -270,6 +316,15 @@ const fmtNum = (v: number | null, digits = 2): string =>
 const fmtUsd = (v: number | null): string =>
   v === null || v === undefined || Number.isNaN(v) ? "—" : `$${v.toFixed(2)}`;
 
+const fmtUsdRange = (lo: number | null, hi: number | null): string => {
+  const loOk = lo !== null && !Number.isNaN(lo);
+  const hiOk = hi !== null && !Number.isNaN(hi);
+  if (loOk && hiOk) return `${fmtUsd(lo)}–${fmtUsd(hi)}`;
+  if (hiOk) return `≤ ${fmtUsd(hi)}`;
+  if (loOk) return `${fmtUsd(lo)}+`;
+  return "—";
+};
+
 const upsideClass = (pct: number | null): string => {
   if (pct === null) return "text-muted-foreground";
   if (pct >= 0.2) return "text-green-600 font-semibold";
@@ -307,6 +362,278 @@ function tierBadge(t: Tier) {
     <Badge variant="outline" className={`text-[10px] ${map[t]}`}>
       {t}
     </Badge>
+  );
+}
+
+function actionBadge(a: QualityRow["action"]) {
+  const map: Record<QualityRow["action"], { label: string; cls: string }> = {
+    ENTRY: { label: "ENTRY", cls: "border-green-600 bg-green-500/15 text-green-700" },
+    HOLD: { label: "HOLD", cls: "border-amber-400 bg-amber-500/10 text-amber-700" },
+    EXIT: { label: "EXIT", cls: "border-red-500 bg-red-500/15 text-red-700" },
+  };
+  const { label, cls } = map[a];
+  return (
+    <Badge variant="outline" className={`text-[10px] ${cls}`}>
+      {label}
+    </Badge>
+  );
+}
+
+function checklistIcon(pass: boolean | null) {
+  if (pass === true) return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />;
+  if (pass === false) return <XCircle className="h-3.5 w-3.5 text-red-600" />;
+  return <MinusCircle className="h-3.5 w-3.5 text-muted-foreground" />;
+}
+
+/** Stacked buy-band: min/max of Keltner lower vs low-anchored VWAP (clearer than raw K−/V− when they cross). */
+function buyBandBounds(pt: PriceTargets | undefined) {
+  if (!pt) return { lo: null as number | null, hi: null as number | null };
+  const k = pt.buyZoneKeltnerLower;
+  const v = pt.buyZoneAnchoredVwap;
+  if (k == null && v == null) return { lo: null, hi: null };
+  if (k != null && v != null) return { lo: Math.min(k, v), hi: Math.max(k, v) };
+  return { lo: k ?? v, hi: k ?? v };
+}
+
+function sellBandBounds(pt: PriceTargets | undefined) {
+  if (!pt) return { lo: null as number | null, hi: null as number | null };
+  const k = pt.sellZoneKeltnerUpper;
+  const v = pt.sellZoneAnchoredVwap;
+  if (k == null && v == null) return { lo: null, hi: null };
+  if (k != null && v != null) return { lo: Math.min(k, v), hi: Math.max(k, v) };
+  return { lo: k ?? v, hi: k ?? v };
+}
+
+/** One line for a min–max band (no duplicate Lo/Hi when range already says it). */
+function bandRangeLine(lo: number, hi: number) {
+  return lo === hi ? fmtUsd(lo) : fmtUsdRange(lo, hi);
+}
+
+function rsiPcrSentimentClass(pt: PriceTargets | undefined) {
+  if (!pt) return "text-red-600 font-semibold";
+  const green =
+    pt.putCallRatio != null && pt.putCallRatio < 0.5 && pt.rsi14 != null && pt.rsi14 <= 70;
+  return green ? "text-green-600 font-semibold" : "text-red-600 font-semibold";
+}
+
+/** One ticker — stacked card layout for narrow viewports. */
+function QualityRowMobileCard({ row: r }: { row: QualityRow }) {
+  const pt = r.priceTargets;
+  const buyB = buyBandBounds(pt);
+  const sellB = sellBandBounds(pt);
+  const lineCls = rsiPcrSentimentClass(pt);
+  const valueRange = pt
+    ? fmtUsdRange(
+        pt.valueZoneFundamentalLow ?? pt.valueZoneLow,
+        pt.valueZoneFundamentalHigh ?? pt.valueZoneHigh,
+      )
+    : "—";
+
+  return (
+    <article className="rounded-xl border border-border/70 bg-card px-4 py-4 shadow-sm space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground tabular-nums">#{r.rank}</span>
+            <span className="font-mono text-sm font-semibold tracking-tight">{r.symbol}</span>
+            <HintWrap content={H.tier}>{tierBadge(r.tier)}</HintWrap>
+            <span className="text-xs font-semibold tabular-nums">Score {r.score}</span>
+          </div>
+          <HintWrap content={H.bucket}>
+            <p className="text-xs text-muted-foreground leading-snug line-clamp-2">{r.strategicBucketLabel}</p>
+          </HintWrap>
+        </div>
+        <HintWrap
+          content={
+            (r.actionChecklist ?? []).length > 0
+              ? [
+                  r.actionWhy ? `Why: ${r.actionWhy}` : null,
+                  ...((r.actionChecklist ?? []).map(
+                    (c) =>
+                      `${c.pass === true ? "✓" : c.pass === false ? "✗" : "—"} ${c.label}${c.detail ? ` (${c.detail})` : ""}`,
+                  ) ?? []),
+                ]
+                  .filter(Boolean)
+                  .join("\n")
+              : H.action
+          }
+        >
+          <div className="flex flex-col items-end gap-1.5">
+            {actionBadge(r.action)}
+            <div className="flex gap-1">
+              {(r.actionChecklist ?? []).slice(0, 5).map((c, i) => (
+                <span key={`m-${r.symbol}-ck-${i}`}>{checklistIcon(c.pass)}</span>
+              ))}
+            </div>
+          </div>
+        </HintWrap>
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
+        <div>
+          <Hint content={H.roic} className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">
+            ROIC
+          </Hint>
+          <span className="tabular-nums font-medium">{fmtPct(r.roic, 1)}</span>
+        </div>
+        <div>
+          <Hint content={H.fcfMargin} className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">
+            FCF mgn
+          </Hint>
+          <span className="tabular-nums font-medium">{fmtPct(r.fcfMargin, 1)}</span>
+        </div>
+        <div>
+          <Hint content={H.netDebtEbitda} className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">
+            ND/EBITDA
+          </Hint>
+          <span className="tabular-nums font-medium">{fmtNum(r.netDebtToEbitda, 2)}x</span>
+        </div>
+        <div>
+          <Hint content={H.revYoy} className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">
+            Rev YoY
+          </Hint>
+          <span className="tabular-nums font-medium">{fmtPct(r.revenueGrowthYoy, 1)}</span>
+        </div>
+        <div>
+          <Hint content={H.off52w} className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">
+            Off 52w
+          </Hint>
+          <span className="tabular-nums font-medium">{fmtPct(r.pctOff52WeekHigh, 1)}</span>
+        </div>
+        <div>
+          <Hint content={H.fwdPe} className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">
+            Fwd P/E
+          </Hint>
+          <span className="tabular-nums font-medium">{fmtNum(r.forwardPE, 1)}</span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="rounded-lg bg-muted/40 px-3 py-3 space-y-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <Hint content={H.valueZone}>Value zone</Hint>
+          </div>
+          <p className="text-sm font-medium tabular-nums text-foreground/90">{valueRange}</p>
+        </div>
+        <div className="rounded-lg bg-muted/40 px-3 py-3 space-y-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <Hint content={H.buyZone}>Buy band</Hint>
+          </div>
+          {buyB.lo != null && buyB.hi != null ? (
+            <p className="text-sm font-medium tabular-nums leading-snug">{bandRangeLine(buyB.lo, buyB.hi)}</p>
+          ) : pt ? (
+            <p className="text-sm text-muted-foreground tabular-nums">
+              {fmtUsdRange(pt.buyZoneLow, pt.buyZoneHigh)}
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">—</p>
+          )}
+        </div>
+        <div className="rounded-lg bg-muted/40 px-3 py-3 space-y-2 sm:col-span-1">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <Hint content={H.sellTrigger}>Sell trigger</Hint>
+          </div>
+          {sellB.lo != null && sellB.hi != null ? (
+            <p className="text-sm font-medium tabular-nums leading-snug">{bandRangeLine(sellB.lo, sellB.hi)}</p>
+          ) : (
+            <p className="text-[11px] text-muted-foreground/80">No price band (need history)</p>
+          )}
+          <div className="border-t border-border/60 pt-2 mt-2 space-y-1.5">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Sentiment</p>
+            <div className={`flex justify-between text-xs ${lineCls}`}>
+              <span>RSI</span>
+              <span className="tabular-nums">{pt?.rsi14 != null ? pt.rsi14.toFixed(0) : "—"}</span>
+            </div>
+            <div className={`flex justify-between text-xs ${lineCls}`}>
+              <span>PCR</span>
+              <span className="tabular-nums">{pt?.putCallRatio != null ? pt.putCallRatio.toFixed(2) : "—"}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-lg border border-border/50 px-3 py-2">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+            <Hint content={H.upsideRR}>Upside %</Hint>
+          </p>
+          {pt?.blendedImpliedUpsidePct == null && pt?.impliedUpsideToBullPct == null ? (
+            <span className="text-xs text-muted-foreground">—</span>
+          ) : (
+            <div className="space-y-1 text-xs">
+              <div className={upsideClass(pt?.blendedImpliedUpsidePct ?? null)}>
+                Blend {pt?.blendedImpliedUpsidePct != null ? fmtPct(pt.blendedImpliedUpsidePct, 0) : "—"}
+              </div>
+              <div className={upsideClass(pt?.impliedUpsideToBullPct ?? null)}>
+                Bull {pt?.impliedUpsideToBullPct != null ? fmtPct(pt.impliedUpsideToBullPct, 0) : ""}
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="rounded-lg border border-border/50 px-3 py-2">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+            <Hint content={H.downsideRR}>Downside %</Hint>
+          </p>
+          <div className="space-y-1 text-xs text-amber-800/95">
+            <div className="flex justify-between gap-2">
+              <span>Blend</span>
+              <span className="tabular-nums">
+                {pt?.impliedDownsideToBlendedFairValuePct != null
+                  ? fmtPct(pt.impliedDownsideToBlendedFairValuePct, 0)
+                  : "—"}
+              </span>
+            </div>
+            <div className="flex justify-between gap-2">
+              <span>Bear</span>
+              <span className="tabular-nums">
+                {pt?.impliedDownsideToBearFairValuePct != null ? fmtPct(pt.impliedDownsideToBearFairValuePct, 0) : ""}
+              </span>
+            </div>
+            <div className="flex justify-between gap-2">
+              <span>Low</span>
+              <span className="tabular-nums">
+                {pt?.impliedDownsideToAnalystLowPct != null ? fmtPct(pt.impliedDownsideToAnalystLowPct, 0) : ""}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-border/50 px-3 py-3">
+        <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">
+          <Hint content={H.priceCol}>Price · targets</Hint>
+        </p>
+        <PriceTargetCell row={r} />
+      </div>
+
+      {r.actionWhy && (
+        <p className="text-[11px] leading-snug text-muted-foreground border-l-2 border-primary/30 pl-3">{r.actionWhy}</p>
+      )}
+
+      <details className="group rounded-lg border border-dashed border-border/60 px-3 py-2">
+        <summary className="cursor-pointer text-xs font-medium text-muted-foreground list-none flex items-center justify-between [&::-webkit-details-marker]:hidden">
+          <span>Long-term role + Live</span>
+          <span className="text-[10px] text-muted-foreground/70 group-open:hidden">Tap to expand</span>
+          <span className="text-[10px] text-muted-foreground/70 hidden group-open:inline">Tap to collapse</span>
+        </summary>
+        <div className="mt-3 space-y-2 text-xs border-t border-border/40 pt-3">
+          {r.thesisHook ? (
+            <p className="text-muted-foreground leading-relaxed">{r.thesisHook}</p>
+          ) : (
+            <p className="italic text-muted-foreground/70">— no curated role —</p>
+          )}
+          {r.dynamicHook && (
+            <div className="text-[11px] text-foreground/85 leading-relaxed">
+              <span className="font-semibold uppercase tracking-wide text-blue-600 text-[10px]">Live: </span>
+              <DynamicHookSegments text={r.dynamicHook} />
+            </div>
+          )}
+          {r.insufficientFlags.length > 0 && (
+            <p className="text-[10px] text-amber-600">Missing: {r.insufficientFlags.join(", ")}</p>
+          )}
+        </div>
+      </details>
+    </article>
   );
 }
 
@@ -569,15 +896,33 @@ function QualityResults({ data }: { data: QualityResponse }) {
       </Card>
 
       <Card>
-        <CardContent className="p-0 overflow-x-auto">
-          <p className="px-4 pt-3 pb-1 text-[11px] text-muted-foreground">
-            Hover dotted underlines on headers and values for definitions. Swipe horizontally on mobile.
+        <CardContent className="p-0">
+          <p className="px-4 pt-3 pb-2 text-[11px] text-muted-foreground leading-relaxed">
+            <span className="hidden lg:inline">
+              Hover dotted underlines on headers and values for definitions. Table scrolls horizontally when needed.
+            </span>
+            <span className="lg:hidden">
+              On narrow screens, each ticker is a card so nothing is squeezed sideways. Rotate or use a wider
+              window for the full scrolling table.
+            </span>
           </p>
-          <Table className="min-w-[1100px]">
+          <div className="lg:hidden px-3 pb-4 space-y-3 max-w-2xl mx-auto">
+            {data.rows.map((r) => (
+              <QualityRowMobileCard key={r.symbol} row={r} />
+            ))}
+          </div>
+          <div className="hidden lg:block overflow-x-auto pb-2">
+          <Table className="min-w-[1580px] w-full">
             <TableHeader>
-              <TableRow>
+              <TableRow className="align-top hover:bg-transparent">
                 <TableHead className="w-12">#</TableHead>
                 <TableHead>Ticker</TableHead>
+                <TableHead className="min-w-[120px] max-w-[140px]">
+                  <Hint content={H.bucket}>Bucket</Hint>
+                </TableHead>
+                <TableHead className="min-w-[150px]">
+                  <Hint content={H.action}>Entry / Hold / Exit</Hint>
+                </TableHead>
                 <TableHead className="text-right">
                   <Hint content={H.roic}>ROIC</Hint>
                 </TableHead>
@@ -602,6 +947,21 @@ function QualityResults({ data }: { data: QualityResponse }) {
                 <TableHead>
                   <Hint content={H.tier}>Tier</Hint>
                 </TableHead>
+                <TableHead className="min-w-[104px] text-right">
+                  <Hint content={H.valueZone}>Value zone</Hint>
+                </TableHead>
+                <TableHead className="min-w-[104px] text-right">
+                  <Hint content={H.buyZone}>Buy zone</Hint>
+                </TableHead>
+                <TableHead className="min-w-[112px] text-right">
+                  <Hint content={H.sellTrigger}>Sell trigger</Hint>
+                </TableHead>
+                <TableHead className="min-w-[72px] text-right">
+                  <Hint content={H.upsideRR}>Upside %</Hint>
+                </TableHead>
+                <TableHead className="min-w-[72px] text-right">
+                  <Hint content={H.downsideRR}>Downside %</Hint>
+                </TableHead>
                 <TableHead className="min-w-[200px]">
                   <Hint content={H.priceCol}>Price · Targets · Fair Value</Hint>
                 </TableHead>
@@ -612,58 +972,299 @@ function QualityResults({ data }: { data: QualityResponse }) {
             </TableHeader>
             <TableBody>
               {data.rows.map((r) => (
-                <TableRow key={r.symbol}>
-                  <TableCell className="text-xs">{r.rank}</TableCell>
-                  <TableCell className="font-mono text-xs font-semibold">{r.symbol}</TableCell>
-                  <TableCell className="text-right text-xs">
+                <TableRow key={r.symbol} className="align-top border-border/60">
+                  <TableCell className="text-xs py-3 align-top">{r.rank}</TableCell>
+                  <TableCell className="font-mono text-xs font-semibold py-3 align-top">{r.symbol}</TableCell>
+                  <TableCell className="text-[11px] leading-snug max-w-[140px] py-3 align-top">
+                    <HintWrap content={H.bucket}>
+                      <span className="line-clamp-2 text-muted-foreground">{r.strategicBucketLabel}</span>
+                    </HintWrap>
+                  </TableCell>
+                  <TableCell className="text-xs py-3 align-top min-w-[140px]">
+                    <HintWrap
+                      content={
+                        (r.actionChecklist ?? []).length > 0
+                          ? [
+                              r.actionWhy ? `Why: ${r.actionWhy}` : null,
+                              ...((r.actionChecklist ?? []).map(
+                                (c) =>
+                                  `${c.pass === true ? "✓" : c.pass === false ? "✗" : "—"} ${c.label}${
+                                    c.detail ? ` (${c.detail})` : ""
+                                  }`
+                              ) ?? []),
+                            ]
+                              .filter(Boolean)
+                              .join("\n")
+                          : H.action
+                      }
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        {actionBadge(r.action)}
+                        <span className="inline-flex items-center gap-1">
+                          {(r.actionChecklist ?? []).slice(0, 3).map((c, i) => (
+                            <span key={`${r.symbol}-ck-${i}`} className="inline-flex">
+                              {checklistIcon(c.pass)}
+                            </span>
+                          ))}
+                        </span>
+                        {r.actionWhy && (
+                          <span className="hidden lg:inline text-[11px] text-muted-foreground max-w-[260px] truncate">
+                            {r.actionWhy}
+                          </span>
+                        )}
+                      </span>
+                    </HintWrap>
+                  </TableCell>
+                  <TableCell className="text-right text-xs py-3 align-top">
                     <Hint content={H.roic} className="tabular-nums">
                       {fmtPct(r.roic, 1)}
                     </Hint>
                   </TableCell>
-                  <TableCell className="text-right text-xs">
+                  <TableCell className="text-right text-xs py-3 align-top">
                     <Hint content={H.fcfMargin} className="tabular-nums">
                       {fmtPct(r.fcfMargin, 1)}
                     </Hint>
                   </TableCell>
-                  <TableCell className="text-right text-xs">
+                  <TableCell className="text-right text-xs py-3 align-top">
                     <Hint content={H.netDebtEbitda} className="tabular-nums">
                       {fmtNum(r.netDebtToEbitda, 2)}x
                     </Hint>
                   </TableCell>
-                  <TableCell className="text-right text-xs">
+                  <TableCell className="text-right text-xs py-3 align-top">
                     <Hint content={H.revYoy} className="tabular-nums">
                       {fmtPct(r.revenueGrowthYoy, 1)}
                     </Hint>
                   </TableCell>
-                  <TableCell className="text-right text-xs">
+                  <TableCell className="text-right text-xs py-3 align-top">
                     <Hint content={H.off52w} className="tabular-nums">
                       {fmtPct(r.pctOff52WeekHigh, 1)}
                     </Hint>
                   </TableCell>
-                  <TableCell className="text-right text-xs">
+                  <TableCell className="text-right text-xs py-3 align-top">
                     <Hint content={H.fwdPe} className="tabular-nums">
                       {fmtNum(r.forwardPE, 1)}
                     </Hint>
                   </TableCell>
-                  <TableCell className="text-right text-xs font-semibold">
+                  <TableCell className="text-right text-xs font-semibold py-3 align-top">
                     <Hint content={H.score} className="tabular-nums">
                       {r.score}
                     </Hint>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="py-3 align-top">
                     <HintWrap content={H.tier}>{tierBadge(r.tier)}</HintWrap>
                   </TableCell>
-                  <TableCell className="text-[11px] leading-tight">
+                  <TableCell className="text-right text-[11px] leading-snug tabular-nums py-3 align-top min-w-[100px]">
+                    <HintWrap
+                      content={
+                        r.priceTargets
+                          ? [
+                              H.valueZone,
+                              r.priceTargets.grahamIntrinsicValue != null
+                                ? `Graham (g=${r.priceTargets.grahamGrowthPercentUsed ?? "—"}%): ${fmtUsd(r.priceTargets.grahamIntrinsicValue)}`
+                                : null,
+                              r.priceTargets.dcfFairValue != null
+                                ? `Simple DCF: ${fmtUsd(r.priceTargets.dcfFairValue)}`
+                                : null,
+                              `Table: ${fmtUsdRange(
+                                r.priceTargets.valueZoneFundamentalLow ?? r.priceTargets.valueZoneLow,
+                                r.priceTargets.valueZoneFundamentalHigh ?? r.priceTargets.valueZoneHigh,
+                              )}`,
+                            ]
+                              .filter(Boolean)
+                              .join("\n\n")
+                          : H.valueZone
+                      }
+                    >
+                      <span className="text-muted-foreground">
+                        {r.priceTargets
+                          ? fmtUsdRange(
+                              r.priceTargets.valueZoneFundamentalLow ?? r.priceTargets.valueZoneLow,
+                              r.priceTargets.valueZoneFundamentalHigh ?? r.priceTargets.valueZoneHigh,
+                            )
+                          : "—"}
+                      </span>
+                    </HintWrap>
+                  </TableCell>
+                  <TableCell className="text-right text-[11px] leading-snug tabular-nums py-3 align-top min-w-[108px]">
+                    <HintWrap
+                      content={
+                        r.priceTargets
+                          ? [
+                              H.buyZone,
+                              r.priceTargets.buyZoneKeltnerLower != null
+                                ? `Keltner lower (SMA20−2×ATR): ${fmtUsd(r.priceTargets.buyZoneKeltnerLower)}`
+                                : null,
+                              r.priceTargets.buyZoneAnchoredVwap != null
+                                ? `Low-anchored VWAP: ${fmtUsd(r.priceTargets.buyZoneAnchoredVwap)}`
+                                : null,
+                              `Legacy band: ${fmtUsdRange(r.priceTargets.buyZoneLow, r.priceTargets.buyZoneHigh)}`,
+                            ]
+                              .filter(Boolean)
+                              .join("\n\n")
+                          : H.buyZone
+                      }
+                    >
+                      {r.priceTargets &&
+                      (r.priceTargets.buyZoneKeltnerLower != null || r.priceTargets.buyZoneAnchoredVwap != null) ? (
+                        (() => {
+                          const b = buyBandBounds(r.priceTargets);
+                          if (b.lo == null || b.hi == null) return <span className="text-muted-foreground">—</span>;
+                          return (
+                            <div className="text-[11px] font-medium text-foreground/90">{bandRangeLine(b.lo, b.hi)}</div>
+                          );
+                        })()
+                      ) : r.priceTargets ? (
+                        <span className="text-muted-foreground">
+                          {fmtUsdRange(r.priceTargets.buyZoneLow, r.priceTargets.buyZoneHigh)}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </HintWrap>
+                  </TableCell>
+                  <TableCell className="text-right text-[11px] leading-snug tabular-nums py-3 align-top min-w-[112px]">
+                    <HintWrap
+                      content={
+                        r.priceTargets
+                          ? [
+                              H.sellTrigger,
+                              r.priceTargets.sellZoneKeltnerUpper != null
+                                ? `Keltner upper (SMA20+2×ATR): ${fmtUsd(r.priceTargets.sellZoneKeltnerUpper)}`
+                                : null,
+                              r.priceTargets.sellZoneAnchoredVwap != null
+                                ? `High-anchored VWAP: ${fmtUsd(r.priceTargets.sellZoneAnchoredVwap)}`
+                                : null,
+                              r.priceTargets.rsi14 != null ? `RSI(14) = ${r.priceTargets.rsi14.toFixed(1)}` : "RSI unavailable",
+                              r.priceTargets.putCallRatio != null
+                                ? `Put/Call vol = ${r.priceTargets.putCallRatio.toFixed(2)}`
+                                : "PCR unavailable",
+                              "RSI/PCR: green only if PCR < 0.5 and RSI ≤ 70; else red.",
+                            ]
+                              .filter(Boolean)
+                              .join("\n")
+                          : H.sellTrigger
+                      }
+                    >
+                      {r.priceTargets ? (
+                        <>
+                          {r.priceTargets.sellZoneKeltnerUpper != null ||
+                          r.priceTargets.sellZoneAnchoredVwap != null ? (
+                            (() => {
+                              const s = sellBandBounds(r.priceTargets);
+                              if (s.lo == null || s.hi == null) {
+                                return (
+                                  <div className="text-muted-foreground/70 text-[10px] mb-1">No price band</div>
+                                );
+                              }
+                              return (
+                                <div className="text-[11px] font-medium text-foreground/90">{bandRangeLine(s.lo, s.hi)}</div>
+                              );
+                            })()
+                          ) : (
+                            <div className="text-muted-foreground/70 text-[10px] mb-1">No price band</div>
+                          )}
+                          <div
+                            className={`mt-2 space-y-1 border-t border-border/60 pt-2 ${rsiPcrSentimentClass(r.priceTargets)}`}
+                          >
+                            <div>RSI {r.priceTargets.rsi14 != null ? r.priceTargets.rsi14.toFixed(0) : "—"}</div>
+                            <div>PCR {r.priceTargets.putCallRatio != null ? r.priceTargets.putCallRatio.toFixed(2) : "—"}</div>
+                          </div>
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </HintWrap>
+                  </TableCell>
+                  <TableCell className="text-right text-[10px] leading-snug tabular-nums py-3 align-top">
+                    <HintWrap
+                      content={
+                        r.priceTargets
+                          ? [
+                              r.priceTargets.blendedImpliedUpsidePct != null
+                                ? `Blended vs now: ${fmtPct(r.priceTargets.blendedImpliedUpsidePct)}`
+                                : null,
+                              r.priceTargets.impliedUpsideToBullPct != null
+                                ? `Bull EPS-band vs now: ${fmtPct(r.priceTargets.impliedUpsideToBullPct)}`
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join("\n") || H.upsideRR
+                          : H.upsideRR
+                      }
+                    >
+                      {r.priceTargets?.blendedImpliedUpsidePct == null &&
+                      r.priceTargets?.impliedUpsideToBullPct == null ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        <>
+                          <div className={upsideClass(r.priceTargets?.blendedImpliedUpsidePct ?? null)}>
+                            {r.priceTargets?.blendedImpliedUpsidePct != null
+                              ? `Blend ${fmtPct(r.priceTargets.blendedImpliedUpsidePct, 0)}`
+                              : ""}
+                          </div>
+                          <div className={upsideClass(r.priceTargets?.impliedUpsideToBullPct ?? null)}>
+                            {r.priceTargets?.impliedUpsideToBullPct != null
+                              ? `Bull ${fmtPct(r.priceTargets.impliedUpsideToBullPct, 0)}`
+                              : ""}
+                          </div>
+                        </>
+                      )}
+                    </HintWrap>
+                  </TableCell>
+                  <TableCell className="text-right text-[10px] leading-snug tabular-nums py-3 align-top">
+                    <HintWrap
+                      content={
+                        r.priceTargets
+                          ? [
+                              r.priceTargets.impliedDownsideToBlendedFairValuePct != null
+                                ? `Drawdown to blended FV: ${fmtPct(r.priceTargets.impliedDownsideToBlendedFairValuePct)}`
+                                : "At or below blended FV — no drawdown to blended.",
+                              r.priceTargets.impliedDownsideToBearFairValuePct != null
+                                ? `Drawdown to bear FV: ${fmtPct(r.priceTargets.impliedDownsideToBearFairValuePct)}`
+                                : "Bear EPS-band FV unavailable or price already at/below bear.",
+                              r.priceTargets.impliedDownsideToAnalystLowPct != null
+                                ? `Drawdown to analyst low: ${fmtPct(r.priceTargets.impliedDownsideToAnalystLowPct)}`
+                                : "Analyst low unavailable or price already at/below low.",
+                            ].join("\n")
+                          : H.downsideRR
+                      }
+                    >
+                      {r.priceTargets?.impliedDownsideToBlendedFairValuePct == null &&
+                      r.priceTargets?.impliedDownsideToBearFairValuePct == null &&
+                      r.priceTargets?.impliedDownsideToAnalystLowPct == null ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        <>
+                          <div className="text-amber-700/90">
+                            {r.priceTargets?.impliedDownsideToBlendedFairValuePct != null
+                              ? `Blend ${fmtPct(r.priceTargets.impliedDownsideToBlendedFairValuePct, 0)}`
+                              : ""}
+                          </div>
+                          <div className="text-amber-800/90">
+                            {r.priceTargets?.impliedDownsideToBearFairValuePct != null
+                              ? `Bear ${fmtPct(r.priceTargets.impliedDownsideToBearFairValuePct, 0)}`
+                              : ""}
+                          </div>
+                          <div className="text-amber-900/85">
+                            {r.priceTargets?.impliedDownsideToAnalystLowPct != null
+                              ? `Low ${fmtPct(r.priceTargets.impliedDownsideToAnalystLowPct, 0)}`
+                              : ""}
+                          </div>
+                        </>
+                      )}
+                    </HintWrap>
+                  </TableCell>
+                  <TableCell className="text-[11px] leading-tight py-3 align-top">
                     <PriceTargetCell row={r} />
                   </TableCell>
-                  <TableCell className="text-xs">
+                  <TableCell className="text-xs py-3 align-top max-w-[340px]">
                     {r.thesisHook ? (
-                      <div className="text-muted-foreground">{r.thesisHook}</div>
+                      <div className="text-muted-foreground leading-relaxed">{r.thesisHook}</div>
                     ) : (
                       <div className="italic text-muted-foreground/70">— no curated role —</div>
                     )}
                     {r.dynamicHook && (
-                      <div className="mt-1 text-[11px] text-foreground/80">
+                      <div className="mt-2 text-[11px] text-foreground/80 leading-relaxed">
                         <Hint content={H.liveLabel} className="text-[10px] font-semibold uppercase tracking-wide text-blue-600">
                           Live:
                         </Hint>{" "}
@@ -671,7 +1272,7 @@ function QualityResults({ data }: { data: QualityResponse }) {
                       </div>
                     )}
                     {r.insufficientFlags.length > 0 && (
-                      <div className="mt-0.5 text-[10px] text-amber-600">
+                      <div className="mt-1 text-[10px] text-amber-600">
                         Missing: {r.insufficientFlags.join(", ")}
                       </div>
                     )}
@@ -680,6 +1281,7 @@ function QualityResults({ data }: { data: QualityResponse }) {
               ))}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
 

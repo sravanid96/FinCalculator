@@ -42,6 +42,42 @@ export interface PriceTargets {
   warnings: string[];
   /** Macro + universe inputs used for bands and DCF (Fed/yields/semis tilt). */
   calibration: MarketCalibration;
+
+  /** Bear→base multiple band: “value” accumulation band (rule-of-thumb). */
+  valueZoneLow: number | null;
+  valueZoneHigh: number | null;
+  /** Floor = min(bear, DCF used in blend, analyst low); ceiling = min(base, blended) — heuristic buy band. */
+  buyZoneLow: number | null;
+  buyZoneHigh: number | null;
+  /** (bull − price) / price when bull and price valid. */
+  impliedUpsideToBullPct: number | null;
+  /** Drawdown from current price to bear fair value: (price − bear) / price; null if not applicable. */
+  impliedDownsideToBearFairValuePct: number | null;
+  /** Drawdown to analyst low target: (price − low) / price; null if not applicable. */
+  impliedDownsideToAnalystLowPct: number | null;
+  /** Drawdown to blended fair value when price trades above blended (same units as other downside fields). */
+  impliedDownsideToBlendedFairValuePct: number | null;
+
+  // ── Confluence math (Graham + DCF value; Keltner + anchored VWAP buy; RSI + PCR sell) ──
+  /** Graham V = EPS × (8.5 + 2g); g = revenue YoY as whole %, clipped 0–12. */
+  grahamIntrinsicValue: number | null;
+  grahamGrowthPercentUsed: number | null;
+  /** Fundamental “value zone”: min/max of Graham intrinsic and simple per-share DCF. */
+  valueZoneFundamentalLow: number | null;
+  valueZoneFundamentalHigh: number | null;
+  /** SMA(20) − 2×ATR(14) on daily closes. */
+  buyZoneKeltnerLower: number | null;
+  /** Typical-price VWAP from lowest-low bar through today (anchored low proxy). */
+  buyZoneAnchoredVwap: number | null;
+  /** Upper Keltner-style band: SMA(20) + 2×ATR(14) — mirror of buy floor. */
+  sellZoneKeltnerUpper: number | null;
+  /** VWAP from highest-high bar through today (anchored “swing high” proxy). */
+  sellZoneAnchoredVwap: number | null;
+  rsi14: number | null;
+  rsiSellTrigger: boolean;
+  /** Put volume / call volume (nearest expiration). */
+  putCallRatio: number | null;
+  pcrSellTrigger: boolean;
 }
 
 function toRecommendationLabel(rec: number | null): string | null {
@@ -138,6 +174,94 @@ function selectEpsForBands(f: Fundamentals): {
 
 function multipleBandFairValue(eps: number, multiple: number): number {
   return eps * multiple;
+}
+
+function computeValuationZoneFields(args: {
+  price: number | null | undefined;
+  bear: number | null;
+  base: number | null;
+  bull: number | null;
+  blended: number | null;
+  dcfForBlend: number | null;
+  analystLow: number | null;
+  analystMean: number | null;
+}): Pick<
+  PriceTargets,
+  | "valueZoneLow"
+  | "valueZoneHigh"
+  | "buyZoneLow"
+  | "buyZoneHigh"
+  | "impliedUpsideToBullPct"
+  | "impliedDownsideToBearFairValuePct"
+  | "impliedDownsideToAnalystLowPct"
+  | "impliedDownsideToBlendedFairValuePct"
+> {
+  const { price, bear, base, bull, blended, dcfForBlend, analystLow, analystMean } = args;
+
+  const hasValueZone = bear !== null && bear > 0 && base !== null && base > 0;
+  let valueZoneLow = hasValueZone ? bear : null;
+  let valueZoneHigh = hasValueZone ? base : null;
+  // When EPS bands are missing (e.g. no positive EPS) but Yahoo has targets, use analyst low→mean as a proxy band.
+  if (!hasValueZone && analystMean !== null && analystMean > 0) {
+    if (analystLow !== null && analystLow > 0) {
+      valueZoneLow = Math.min(analystLow, analystMean);
+      valueZoneHigh = Math.max(analystLow, analystMean);
+    } else {
+      valueZoneLow = analystMean * 0.88;
+      valueZoneHigh = analystMean * 1.06;
+    }
+    if (valueZoneLow > valueZoneHigh) {
+      [valueZoneLow, valueZoneHigh] = [valueZoneHigh, valueZoneLow];
+    }
+  }
+
+  const floors: number[] = [];
+  if (bear !== null && bear > 0 && Number.isFinite(bear)) floors.push(bear);
+  if (dcfForBlend !== null && dcfForBlend > 0 && Number.isFinite(dcfForBlend)) floors.push(dcfForBlend);
+  if (analystLow !== null && analystLow > 0 && Number.isFinite(analystLow)) floors.push(analystLow);
+  let buyZoneLow = floors.length > 0 ? Math.min(...floors) : null;
+
+  const tops: number[] = [];
+  if (base !== null && base > 0 && Number.isFinite(base)) tops.push(base);
+  if (blended !== null && blended > 0 && Number.isFinite(blended)) tops.push(blended);
+  if (analystMean !== null && analystMean > 0 && Number.isFinite(analystMean)) tops.push(analystMean);
+  let buyZoneHigh = tops.length > 0 ? Math.min(...tops) : null;
+
+  if (buyZoneLow === null && buyZoneHigh !== null && analystMean !== null && analystMean > 0) {
+    const synthetic = analystMean * 0.82;
+    if (synthetic > 0 && synthetic < buyZoneHigh) buyZoneLow = synthetic;
+  }
+  if (buyZoneLow === null && buyZoneHigh !== null && blended !== null && blended > 0) {
+    const synthetic = blended * 0.88;
+    if (synthetic > 0 && synthetic < buyZoneHigh) buyZoneLow = synthetic;
+  }
+
+  if (buyZoneLow !== null && buyZoneHigh !== null && buyZoneLow > buyZoneHigh) {
+    [buyZoneLow, buyZoneHigh] = [buyZoneHigh, buyZoneLow];
+  }
+
+  const p = price != null && price > 0 ? price : null;
+  const impliedUpsideToBullPct = p && bull !== null && bull > 0 ? (bull - p) / p : null;
+
+  const impliedDownsideToBearFairValuePct =
+    p && bear !== null && bear > 0 && p > bear ? (p - bear) / p : null;
+
+  const impliedDownsideToAnalystLowPct =
+    p && analystLow !== null && analystLow > 0 && p > analystLow ? (p - analystLow) / p : null;
+
+  const impliedDownsideToBlendedFairValuePct =
+    p && blended !== null && blended > 0 && p > blended ? (p - blended) / p : null;
+
+  return {
+    valueZoneLow,
+    valueZoneHigh,
+    buyZoneLow,
+    buyZoneHigh,
+    impliedUpsideToBullPct,
+    impliedDownsideToBearFairValuePct,
+    impliedDownsideToAnalystLowPct,
+    impliedDownsideToBlendedFairValuePct,
+  };
 }
 
 export function computePriceTargets(f: Fundamentals, cal: MarketCalibration): PriceTargets {
@@ -270,6 +394,17 @@ export function computePriceTargets(f: Fundamentals, cal: MarketCalibration): Pr
     );
   }
 
+  const zoneFields = computeValuationZoneFields({
+    price,
+    bear,
+    base,
+    bull,
+    blended,
+    dcfForBlend,
+    analystLow: f.analystTargetLow,
+    analystMean,
+  });
+
   return {
     analystMean,
     analystHigh: f.analystTargetHigh,
@@ -293,5 +428,18 @@ export function computePriceTargets(f: Fundamentals, cal: MarketCalibration): Pr
     methodNotes: notes,
     warnings,
     calibration: cal,
+    ...zoneFields,
+    grahamIntrinsicValue: null,
+    grahamGrowthPercentUsed: null,
+    valueZoneFundamentalLow: null,
+    valueZoneFundamentalHigh: null,
+    buyZoneKeltnerLower: null,
+    buyZoneAnchoredVwap: null,
+    sellZoneKeltnerUpper: null,
+    sellZoneAnchoredVwap: null,
+    rsi14: null,
+    rsiSellTrigger: false,
+    putCallRatio: null,
+    pcrSellTrigger: false,
   };
 }

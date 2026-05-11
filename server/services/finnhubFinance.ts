@@ -79,15 +79,20 @@ export async function getFinnhubSnapshot(symbol: string): Promise<
 > {
   const sym = symbol.toUpperCase();
   if (!FINNHUB_KEY) return null;
-  const cacheKey = `finn:v1:${sym}`;
+  const cacheKey = `finn:v2:${sym}`;
   const hit = cacheGet(cacheKey);
   if (hit) return { fundamentals: hit.data, error: hit.error };
 
   const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(FINNHUB_KEY)}`;
   const metricUrl = `https://finnhub.io/api/v1/stock/metric?symbol=${encodeURIComponent(sym)}&metric=all&token=${encodeURIComponent(FINNHUB_KEY)}`;
+  const profileUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(FINNHUB_KEY)}`;
 
-  const [q, m] = await Promise.all([fetchJson(quoteUrl), fetchJson(metricUrl)]);
-  const error = errFrom(q) ?? errFrom(m);
+  const [q, m, prof] = await Promise.all([
+    fetchJson(quoteUrl),
+    fetchJson(metricUrl),
+    fetchJson(profileUrl),
+  ]);
+  const error = errFrom(q) ?? errFrom(m) ?? errFrom(prof);
 
   const out: Partial<Fundamentals> = {};
 
@@ -95,19 +100,42 @@ export async function getFinnhubSnapshot(symbol: string): Promise<
   const price = n(q?.c);
   if (price !== null) out.price = price;
 
+  if (typeof prof?.name === "string" && prof.name.trim()) out.name = prof.name.trim();
+
   const metric = m?.metric ?? {};
-  // Finnhub basic financials naming
-  const high52 = n(metric["52WeekHigh"]) ?? n(metric["52WeekHigh"]);
+  // Finnhub uses mixed key styles across versions; try all.
+  const high52 = n(
+    metric.week52High ??
+      metric["52WeekHigh"] ??
+      metric.fiftyTwoWeekHigh ??
+      metric["fiftyTwoWeekHigh"]
+  );
   if (high52 !== null) out.high52Week = high52;
 
-  const peTtm = n(metric["peTTM"]) ?? n(metric["peNormalizedAnnual"]);
+  const peTtm = n(
+    metric.peTTM ??
+      metric.peBasicExclExtraTTM ??
+      metric.peNormalizedAnnual ??
+      metric.peAnnual
+  );
   if (peTtm !== null) out.trailingPE = peTtm;
 
-  const mcap = n(metric["marketCapitalization"]);
-  if (mcap !== null) out.marketCap = mcap * 1e6; // Finnhub reports in millions USD
+  // Profile2: marketCapitalization is typically full USD for US listings.
+  const profMcap = n(prof?.marketCapitalization);
+  if (profMcap !== null) out.marketCap = profMcap;
 
-  const shares = n(metric["shareOutstanding"]);
-  if (shares !== null) out.sharesOutstanding = shares * 1e6; // also in millions
+  const metricMcap = n(metric.marketCapitalization);
+  if (metricMcap !== null && out.marketCap == null) {
+    out.marketCap = metricMcap * 1e6;
+  }
+
+  const profShares = n(prof?.shareOutstanding);
+  if (profShares !== null) out.sharesOutstanding = profShares;
+
+  const metricShares = n(metric.shareOutstanding);
+  if (metricShares !== null && out.sharesOutstanding == null) {
+    out.sharesOutstanding = metricShares * 1e6;
+  }
 
   // Derived pct off 52w high
   if (out.price != null && out.high52Week != null && out.high52Week > 0) {

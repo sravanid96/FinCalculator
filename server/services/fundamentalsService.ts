@@ -1,6 +1,7 @@
 import * as YahooFinanceNS from "yahoo-finance2";
 import { getFmpFundamentals } from "./fmpFinance";
 import { getFinnhubSnapshot } from "./finnhubFinance";
+import { getStockAnalysisForwardPe5yAvg } from "./stockAnalysisFinance";
 
 const YahooFinanceCtor: any =
   (YahooFinanceNS as any).default?.default ?? (YahooFinanceNS as any).default ?? YahooFinanceNS;
@@ -12,6 +13,8 @@ const TTL = 30 * 60 * 1000; // 30m — fresher fundamentals for screener; still 
 export interface Fundamentals {
   symbol: string;
   name: string;
+  sector: string | null;
+  industry: string | null;
   marketCap: number | null;
   price: number | null;
   high52Week: number | null;
@@ -25,6 +28,7 @@ export interface Fundamentals {
 
   trailingPE: number | null;
   forwardPE: number | null;
+  forwardPe5yAvg: number | null;
 
   priceToBook: number | null;
   evToSales: number | null;
@@ -43,6 +47,36 @@ export interface Fundamentals {
   trailingEps: number | null;
   sharesOutstanding: number | null;
   ttmRevenue: number | null;
+  ttmEbitda: number | null;
+  ttmOperatingCashFlow: number | null;
+  ttmCapex: number | null;
+  ttmInterestExpense: number | null;
+  totalDebt: number | null;
+  cashAndEquivalents: number | null;
+  dscrApprox: number | null; // FCF / Interest (proxy; principal not included)
+  impliedPaybackYears: number | null; // totalDebt / FCF
+  fcfConversion: number | null; // FCF / EBITDA
+
+  // Earnings momentum (latest vs prior reported quarter)
+  earnings: {
+    eps: {
+      latest: { quarterEnd: string; actual: number | null; estimate: number | null; surprisePct: number | null } | null;
+      prior: { quarterEnd: string; actual: number | null; estimate: number | null; surprisePct: number | null } | null;
+    };
+    epsQoqGrowth: number | null;
+    revenue: {
+      latest: { quarterEnd: string; actual: number | null } | null;
+      prior: { quarterEnd: string; actual: number | null } | null;
+      qoqGrowth: number | null;
+    };
+    margins: {
+      latest: { quarterEnd: string; grossMargin: number | null; operatingMargin: number | null } | null;
+      prior: { quarterEnd: string; grossMargin: number | null; operatingMargin: number | null } | null;
+      grossMarginDeltaPp: number | null; // latest - prior, percentage points
+      operatingMarginDeltaPp: number | null;
+    };
+    notes: string[];
+  };
 
   notes: string[];
 }
@@ -119,7 +153,7 @@ async function fetchTimeSeries(
 }
 
 export async function getFundamentals(symbol: string): Promise<Fundamentals> {
-  const key = `fund:v3:${symbol}`;
+  const key = `fund:v4:${symbol}`;
   const cached = getCached<Fundamentals>(key);
   if (cached) return cached;
 
@@ -127,6 +161,8 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
   const out: Fundamentals = {
     symbol,
     name: symbol,
+    sector: null,
+    industry: null,
     marketCap: null,
     price: null,
     high52Week: null,
@@ -138,6 +174,7 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     revenueGrowthYoy: null,
     trailingPE: null,
     forwardPE: null,
+    forwardPe5yAvg: null,
     priceToBook: null,
     evToSales: null,
     ebitdaMargin: null,
@@ -151,6 +188,27 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     trailingEps: null,
     sharesOutstanding: null,
     ttmRevenue: null,
+    ttmEbitda: null,
+    ttmOperatingCashFlow: null,
+    ttmCapex: null,
+    ttmInterestExpense: null,
+    totalDebt: null,
+    cashAndEquivalents: null,
+    dscrApprox: null,
+    impliedPaybackYears: null,
+    fcfConversion: null,
+    earnings: {
+      eps: { latest: null, prior: null },
+      epsQoqGrowth: null,
+      revenue: { latest: null, prior: null, qoqGrowth: null },
+      margins: {
+        latest: null,
+        prior: null,
+        grossMarginDeltaPp: null,
+        operatingMarginDeltaPp: null,
+      },
+      notes: [],
+    },
     notes,
   };
 
@@ -159,7 +217,7 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
   try {
     summary = await yahooFinance.quoteSummary(
       symbol,
-      { modules: ["price", "summaryDetail", "defaultKeyStatistics", "financialData"] },
+      { modules: ["price", "summaryDetail", "defaultKeyStatistics", "financialData", "earningsHistory", "assetProfile"] },
       { validateResult: false }
     );
   } catch (e) {
@@ -171,8 +229,12 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     const summaryDetail = summary?.summaryDetail ?? {};
     const keyStats = summary?.defaultKeyStatistics ?? {};
     const fd = summary?.financialData ?? {};
+    const eh = summary?.earningsHistory ?? {};
+    const ap = summary?.assetProfile ?? {};
 
     out.name = price.longName || price.shortName || symbol;
+    out.sector = typeof ap.sector === "string" ? ap.sector : null;
+    out.industry = typeof ap.industry === "string" ? ap.industry : null;
     out.marketCap = num(price.marketCap) ?? num(summaryDetail.marketCap);
     out.price = num(price.regularMarketPrice);
     out.high52Week = num(summaryDetail.fiftyTwoWeekHigh);
@@ -206,9 +268,12 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     if (fdEbitda !== null && fdRevenue && fdRevenue > 0) {
       out.ebitdaMargin = fdEbitda / fdRevenue;
     }
+    if (fdEbitda !== null) out.ttmEbitda = fdEbitda;
 
     const fdDebt = num(fd.totalDebt);
     const fdCash = num(fd.totalCash);
+    if (fdDebt !== null) out.totalDebt = fdDebt;
+    if (fdCash !== null) out.cashAndEquivalents = fdCash;
     if (fdDebt !== null && fdCash !== null && fdEbitda && fdEbitda > 0) {
       out.netDebtToEbitda = (fdDebt - fdCash) / fdEbitda;
     }
@@ -217,6 +282,51 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     if (fdFcf !== null) {
       out.fcf = fdFcf;
       if (fdRevenue && fdRevenue > 0) out.fcfMargin = fdFcf / fdRevenue;
+    }
+
+    // Earnings history (EPS actual vs estimate) — most recent 2 reported quarters.
+    const hist = Array.isArray(eh?.history) ? eh.history : [];
+    if (hist.length > 0) {
+      const parsed = hist
+        .map((h: any) => ({
+          quarterEnd:
+            h?.quarter instanceof Date
+              ? h.quarter.toISOString().slice(0, 10)
+              : typeof h?.quarter === "string"
+                ? String(h.quarter).slice(0, 10)
+                : null,
+          actual: num(h?.epsActual),
+          estimate: num(h?.epsEstimate),
+          surprisePct: num(h?.surprisePercent),
+          ts: h?.quarter instanceof Date ? h.quarter.getTime() : new Date(h?.quarter ?? 0).getTime(),
+        }))
+        .filter((x: any) => x.quarterEnd)
+        .sort((a: any, b: any) => b.ts - a.ts);
+
+      const latestEps = parsed[0] ?? null;
+      const priorEps = parsed[1] ?? null;
+      if (latestEps) {
+        out.earnings.eps.latest = {
+          quarterEnd: latestEps.quarterEnd,
+          actual: latestEps.actual,
+          estimate: latestEps.estimate,
+          surprisePct: latestEps.surprisePct,
+        };
+      }
+      if (priorEps) {
+        out.earnings.eps.prior = {
+          quarterEnd: priorEps.quarterEnd,
+          actual: priorEps.actual,
+          estimate: priorEps.estimate,
+          surprisePct: priorEps.surprisePct,
+        };
+      }
+
+      if (latestEps?.actual != null && priorEps?.actual != null && priorEps.actual !== 0) {
+        out.earnings.epsQoqGrowth = (latestEps.actual - priorEps.actual) / Math.abs(priorEps.actual);
+      }
+    } else {
+      out.earnings.notes.push("earningsHistory missing (EPS actual/estimate unavailable).");
     }
   }
 
@@ -269,18 +379,22 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     }
   }
 
-  // If snapshot fields are still missing, fall back to Finnhub (often works on Render).
-  const stillMissingSnapshot =
-    (out.price === null ? 1 : 0) +
-    (out.high52Week === null ? 1 : 0) +
-    (out.trailingPE === null ? 1 : 0) +
-    (out.marketCap === null ? 1 : 0);
+  // Finnhub: fills quote snapshot fields when Yahoo is blocked and FMP is premium-gated.
+  const snapshotHole =
+    out.price === null ||
+    out.high52Week === null ||
+    out.marketCap === null ||
+    out.trailingPE === null;
 
-  if (stillMissingSnapshot >= 2) {
+  if (snapshotHole) {
     const fin = await getFinnhubSnapshot(symbol);
-    if (fin?.fundamentals) {
+    if (fin === null) {
       notes.push(
-        `Snapshot fallback: filled from Finnhub where available.${fin.error ? ` (Finnhub note: ${fin.error})` : ""}`
+        "Snapshot fallback skipped: FINNHUB_API_KEY not set on the server (Render env var)."
+      );
+    } else {
+      notes.push(
+        `Snapshot fallback (Finnhub): merged where non-null.${fin.error ? ` (Finnhub note: ${fin.error})` : ""}`
       );
       const ff = fin.fundamentals;
       out.marketCap = out.marketCap ?? ff.marketCap ?? null;
@@ -288,6 +402,9 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
       out.high52Week = out.high52Week ?? ff.high52Week ?? null;
       out.trailingPE = out.trailingPE ?? ff.trailingPE ?? null;
       out.sharesOutstanding = out.sharesOutstanding ?? ff.sharesOutstanding ?? null;
+      if (typeof ff.name === "string" && ff.name.trim() && (!out.name || out.name === symbol)) {
+        out.name = ff.name.trim();
+      }
       if (out.pctOff52WeekHigh === null) out.pctOff52WeekHigh = ff.pctOff52WeekHigh ?? null;
       if (
         out.pctOff52WeekHigh === null &&
@@ -297,18 +414,16 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
       ) {
         out.pctOff52WeekHigh = (out.price - out.high52Week) / out.high52Week;
       }
-    } else {
-      notes.push(`Snapshot fallback: Finnhub unavailable.${fin?.error ? ` (Finnhub error: ${fin.error})` : ""}`);
     }
   }
-
   // 2) fundamentalsTimeSeries for ROIC components + fallbacks.
   // Use 'trailing' for income / cash-flow (TTM), 'annual' for balance sheet (latest fiscal year).
-  const [ttmFin, annualFin, annualBs, ttmCf] = await Promise.all([
+  const [ttmFin, annualFin, annualBs, ttmCf, qFin] = await Promise.all([
     fetchTimeSeries(symbol, "trailing", "financials"),
     fetchTimeSeries(symbol, "annual", "financials"),
     fetchTimeSeries(symbol, "annual", "balance-sheet"),
     fetchTimeSeries(symbol, "trailing", "cash-flow"),
+    fetchTimeSeries(symbol, "quarterly", "financials"),
   ]);
 
   // Revenue (TTM) — fallback if financialData didn't give it.
@@ -340,6 +455,15 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     if (ttmRevenue && ttmRevenue > 0) out.fcfMargin = ttmFcfAlt / ttmRevenue;
   }
 
+  const ttmOCF = latest(ttmCf, "operatingCashFlow");
+  if (ttmOCF !== null) out.ttmOperatingCashFlow = ttmOCF;
+  const ttmCapex = latest(ttmCf, "capitalExpenditure");
+  if (ttmCapex !== null) out.ttmCapex = ttmCapex; // typically negative
+
+  // Interest expense (TTM) — used for DSCR proxy.
+  const ttmInterest = latest(ttmFin, "interestExpense") ?? latest(annualFin, "interestExpense");
+  if (ttmInterest !== null) out.ttmInterestExpense = Math.abs(ttmInterest);
+
   // EBITDA margin fallback
   if (out.ebitdaMargin === null && ttmEbitda !== null && ttmRevenue && ttmRevenue > 0) {
     out.ebitdaMargin = ttmEbitda / ttmRevenue;
@@ -350,6 +474,21 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     out.netDebtToEbitda = (bsDebt - bsCash) / ttmEbitda;
   }
 
+  if (out.ttmEbitda === null && ttmEbitda !== null) out.ttmEbitda = ttmEbitda;
+  if (out.totalDebt === null && bsDebt !== null) out.totalDebt = bsDebt;
+  if (out.cashAndEquivalents === null && bsCash !== null) out.cashAndEquivalents = bsCash;
+
+  // Derived sanity checks (only when inputs exist)
+  if (out.fcf !== null && out.ttmEbitda !== null && out.ttmEbitda !== 0) {
+    out.fcfConversion = out.fcf / Math.abs(out.ttmEbitda);
+  }
+  if (out.fcf !== null && out.ttmInterestExpense !== null && out.ttmInterestExpense > 0) {
+    out.dscrApprox = out.fcf / out.ttmInterestExpense;
+  }
+  if (out.fcf !== null && out.totalDebt !== null && out.fcf > 0) {
+    out.impliedPaybackYears = out.totalDebt / out.fcf;
+  }
+
   // Revenue growth YoY fallback — use annual financials (newest vs prior).
   if (out.revenueGrowthYoy === null) {
     const { newest, prior } = latestTwo(annualFin, "totalRevenue");
@@ -358,6 +497,47 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     } else {
       notes.push("revenueGrowth: not in financialData and annual history < 2 years");
     }
+  }
+
+  // Earnings revenue momentum — latest vs prior quarter reported revenue.
+  // Yahoo's earningsHistory doesn't include revenue in our payload; pull from quarterly financials instead.
+  const qSorted = Array.isArray(qFin)
+    ? [...qFin].sort((a, b) => {
+        const ad = a?.date instanceof Date ? a.date.getTime() : new Date(a?.date ?? 0).getTime();
+        const bd = b?.date instanceof Date ? b.date.getTime() : new Date(b?.date ?? 0).getTime();
+        return bd - ad;
+      })
+    : [];
+  const q0 = qSorted[0] ?? null;
+  const q1 = qSorted[1] ?? null;
+  const q0Date =
+    q0?.date instanceof Date ? q0.date.toISOString().slice(0, 10) : q0?.date ? String(q0.date).slice(0, 10) : null;
+  const q1Date =
+    q1?.date instanceof Date ? q1.date.toISOString().slice(0, 10) : q1?.date ? String(q1.date).slice(0, 10) : null;
+  const q0Rev = q0 ? num(q0.totalRevenue) : null;
+  const q1Rev = q1 ? num(q1.totalRevenue) : null;
+  if (q0Date) out.earnings.revenue.latest = { quarterEnd: q0Date, actual: q0Rev };
+  if (q1Date) out.earnings.revenue.prior = { quarterEnd: q1Date, actual: q1Rev };
+  if (q0Rev !== null && q1Rev !== null && q1Rev !== 0) {
+    out.earnings.revenue.qoqGrowth = (q0Rev - q1Rev) / Math.abs(q1Rev);
+  }
+
+  // Margins momentum — gross + operating margin latest vs prior quarter.
+  const q0GrossProfit = q0 ? num(q0.grossProfit) : null;
+  const q1GrossProfit = q1 ? num(q1.grossProfit) : null;
+  const q0OpInc = q0 ? num(q0.operatingIncome) : null;
+  const q1OpInc = q1 ? num(q1.operatingIncome) : null;
+  const q0GrossMargin = q0GrossProfit !== null && q0Rev && q0Rev !== 0 ? q0GrossProfit / q0Rev : null;
+  const q1GrossMargin = q1GrossProfit !== null && q1Rev && q1Rev !== 0 ? q1GrossProfit / q1Rev : null;
+  const q0OpMargin = q0OpInc !== null && q0Rev && q0Rev !== 0 ? q0OpInc / q0Rev : null;
+  const q1OpMargin = q1OpInc !== null && q1Rev && q1Rev !== 0 ? q1OpInc / q1Rev : null;
+  if (q0Date) out.earnings.margins.latest = { quarterEnd: q0Date, grossMargin: q0GrossMargin, operatingMargin: q0OpMargin };
+  if (q1Date) out.earnings.margins.prior = { quarterEnd: q1Date, grossMargin: q1GrossMargin, operatingMargin: q1OpMargin };
+  if (q0GrossMargin !== null && q1GrossMargin !== null) {
+    out.earnings.margins.grossMarginDeltaPp = (q0GrossMargin - q1GrossMargin) * 100;
+  }
+  if (q0OpMargin !== null && q1OpMargin !== null) {
+    out.earnings.margins.operatingMarginDeltaPp = (q0OpMargin - q1OpMargin) * 100;
   }
 
   // ROIC = NOPAT / InvestedCapital
@@ -384,6 +564,17 @@ export async function getFundamentals(symbol: string): Promise<Fundamentals> {
     else if (investedCapital <= 0) notes.push("ROIC: invested capital ≤ 0");
   }
 
+  // Extra valuation fetch: 5y average forward P/E (StockAnalysis scrape).
+  // Best-effort; keep null on failure.
+  try {
+    const sa = await getStockAnalysisForwardPe5yAvg(symbol);
+    if (sa.source === "stockanalysis" && typeof sa.forwardPe5yAvg === "number") {
+      out.forwardPe5yAvg = sa.forwardPe5yAvg;
+    }
+  } catch {
+    // ignore
+  }
+
   setCached(key, out);
   return out;
 }
@@ -402,6 +593,8 @@ export async function getFundamentalsBatch(symbols: string[]): Promise<Fundament
         results.push({
           symbol: symbols[i],
           name: symbols[i],
+          sector: null,
+          industry: null,
           marketCap: null,
           price: null,
           high52Week: null,
@@ -413,6 +606,7 @@ export async function getFundamentalsBatch(symbols: string[]): Promise<Fundament
           revenueGrowthYoy: null,
           trailingPE: null,
           forwardPE: null,
+          forwardPe5yAvg: null,
           priceToBook: null,
           evToSales: null,
           ebitdaMargin: null,
@@ -426,6 +620,27 @@ export async function getFundamentalsBatch(symbols: string[]): Promise<Fundament
           trailingEps: null,
           sharesOutstanding: null,
           ttmRevenue: null,
+          ttmEbitda: null,
+          ttmOperatingCashFlow: null,
+          ttmCapex: null,
+          ttmInterestExpense: null,
+          totalDebt: null,
+          cashAndEquivalents: null,
+          dscrApprox: null,
+          impliedPaybackYears: null,
+          fcfConversion: null,
+          earnings: {
+            eps: { latest: null, prior: null },
+            epsQoqGrowth: null,
+            revenue: { latest: null, prior: null, qoqGrowth: null },
+            margins: {
+              latest: null,
+              prior: null,
+              grossMarginDeltaPp: null,
+              operatingMarginDeltaPp: null,
+            },
+            notes: ["fetch failed (earnings unavailable)"],
+          },
           notes: [`fetch failed: ${(e as Error).message}`],
         });
       }

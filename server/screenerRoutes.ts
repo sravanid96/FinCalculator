@@ -7,7 +7,12 @@ import {
   rankCyclicalTrough,
 } from "./services/screenerEngine";
 import { UNIVERSES, listUniverses } from "./services/screenerUniverses";
-import { getTreasury10YieldPercent, getEtfValuationSnapshot } from "./services/yahooFinance";
+import {
+  getTreasury10YieldPercent,
+  getEtfValuationSnapshot,
+  getHistoricalPrices,
+  getPutCallVolumeRatioNearTerm,
+} from "./services/yahooFinance";
 import { buildMarketCalibration, getAnchorEtfForUniverse } from "./services/marketCalibrationService";
 import {
   getCompareData,
@@ -15,7 +20,9 @@ import {
   compareDataSourceStatus,
 } from "./services/compareDataService";
 import { computePriceTargets } from "./services/priceTargetService";
+import { enrichPriceTargetsWithConfluence } from "./services/valuationConfluenceService";
 import { fmpStatus } from "./services/fmpFinance";
+import { finnhubStatus } from "./services/finnhubFinance";
 
 const router = Router();
 
@@ -38,7 +45,7 @@ router.get("/debug/env", (_req: Request, res: Response) => {
   res.json({
     now: new Date().toISOString(),
     fmp: fmpStatus(),
-    finnhubConfigured: !!process.env.FINNHUB_API_KEY,
+    finnhub: finnhubStatus(),
     edgarUserAgentConfigured: !!process.env.EDGAR_USER_AGENT,
   });
 });
@@ -132,7 +139,7 @@ router.get("/quality-discount", async (req: Request, res: Response) => {
       : null;
   const calibration = buildMarketCalibration(universeMeta?.id ?? null, tnx, sectorSnap);
   const fpeKey = sectorSnap?.forwardPE != null ? sectorSnap.forwardPE.toFixed(1) : "na";
-  const cacheKey = `qd:v8:${universeMeta?.id ?? "CUST"}:${tnx?.toFixed(2) ?? "na"}:${fpeKey}:${tickers.join(",")}`;
+  const cacheKey = `qd:v13:${universeMeta?.id ?? "CUST"}:${tnx?.toFixed(2) ?? "na"}:${fpeKey}:${tickers.join(",")}`;
   const hit = cached<any>(cacheKey);
   if (hit) return res.json(hit);
 
@@ -147,6 +154,24 @@ router.get("/quality-discount", async (req: Request, res: Response) => {
       fundamentalsBySymbol,
       calibration
     );
+
+    const [histResults, pcrResults] = await Promise.all([
+      Promise.all(tickers.map((s) => getHistoricalPrices(s, 15).catch(() => []))),
+      Promise.all(tickers.map((s) => getPutCallVolumeRatioNearTerm(s).catch(() => null))),
+    ]);
+    const histBySymbol = Object.fromEntries(tickers.map((s, i) => [s, histResults[i]]));
+    const pcrBySymbol = Object.fromEntries(tickers.map((s, i) => [s, pcrResults[i]]));
+
+    const rowsWithConfluence = ranked.map((row) => {
+      const f = fundamentalsBySymbol[row.symbol];
+      if (!f) return row;
+      const hist = histBySymbol[row.symbol] ?? [];
+      const pcr = pcrBySymbol[row.symbol] ?? null;
+      return {
+        ...row,
+        priceTargets: enrichPriceTargetsWithConfluence(row.priceTargets, f, hist, pcr),
+      };
+    });
 
     const summary = {
       generatedAt: new Date().toISOString(),
@@ -169,6 +194,9 @@ router.get("/quality-discount", async (req: Request, res: Response) => {
         "Macro calibration: multiples blend (1) 10Y yield (^TNX) and (2) sector ETF forward P/E from Yahoo quoteSummary — SMH for semis/AI-infra (iShares SOXX would behave similarly), IGV software, XLI industrials, ITA defense, XLF financials, XLV health. Base multiple = 38% yield-implied + 62% sector-forward-P/E anchor when ETF forward P/E is in range; else semis themes use a small manual band tilt. DCF = 10Y + ERP (clamped).",
         "Long-term hook = curated role description (stable). Live snapshot = data-derived from current Yahoo fundamentals (changes every refresh).",
         "Price target column: (1) Analyst consensus (Yahoo). (2) Multiple bands on forward EPS using calibrated multiples. (3) Simple DCF with 10Y-linked discount + capped growth. If methods disagree wildly, dig deeper.",
+        "Value zone (table): Graham intrinsic V = EPS×(8.5+2g), g = YoY revenue growth as whole % (0–12), vs simple per-share DCF — shown as min–max of the two when both exist; else legacy analyst/EPS-band proxy in tooltips on older fields.",
+        "Buy zone (table): SMA(20)−2×ATR(14) Keltner-style floor and VWAP(typical price×volume) anchored from the lowest-low daily bar in ~15 months of history; legacy heuristic buy band still in Price·Targets detail.",
+        "Sell trigger column: price band = min–max of upper Keltner SMA(20)+2×ATR(14) and high-anchored VWAP (from highest-high bar); RSI/PCR block below uses your green rule (PCR<0.5 and RSI≤70) else red.",
         "Quality (max 80): +20 each — ROIC ≥ 15%, FCF positive, NetDebt/EBITDA < 2x, Revenue YoY > 0.",
         "Discount (max 20): +10 each — ≥15% off 52w high, Forward P/E < Trailing P/E.",
         "Tiers: BEST 80-100, STRONG 65-79, WATCH 50-64, AVOID <50.",
@@ -176,7 +204,7 @@ router.get("/quality-discount", async (req: Request, res: Response) => {
         "ROIC computed as NOPAT / Invested Capital. Yahoo's `investedCapital` field used when available; else Debt + Equity − Cash.",
         "Where any field is null, that gate cannot pass and the row's score is reduced. Don't trade on a row with multiple Missing flags without manual verification.",
       ],
-      rows: ranked,
+      rows: rowsWithConfluence,
     };
 
     setCache(cacheKey, summary);
@@ -250,7 +278,7 @@ router.get("/compare/:a/:b", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "Pick two different tickers." });
   }
 
-  const cacheKey = `compare:v2:${a}:${b}`;
+  const cacheKey = `compare:v6:${a}:${b}`;
   const hit = cached<any>(cacheKey);
   if (hit) return res.json(hit);
 
@@ -272,6 +300,15 @@ router.get("/compare/:a/:b", async (req: Request, res: Response) => {
     const aTargets = computePriceTargets(aFund, calibration);
     const bTargets = computePriceTargets(bFund, calibration);
 
+    const [aHist, bHist, aPcr, bPcr] = await Promise.all([
+      getHistoricalPrices(a, 15).catch(() => []),
+      getHistoricalPrices(b, 15).catch(() => []),
+      getPutCallVolumeRatioNearTerm(a).catch(() => null),
+      getPutCallVolumeRatioNearTerm(b).catch(() => null),
+    ]);
+    const aTargetsE = enrichPriceTargetsWithConfluence(aTargets, aFund, aHist, aPcr);
+    const bTargetsE = enrichPriceTargetsWithConfluence(bTargets, bFund, bHist, bPcr);
+
     const peers = intersectPeers([aCompare, bCompare]);
 
     const payload = {
@@ -284,14 +321,14 @@ router.get("/compare/:a/:b", async (req: Request, res: Response) => {
           symbol: a,
           fundamentals: aFund,
           score: aScored,
-          priceTargets: aTargets,
+          priceTargets: aTargetsE,
           compare: aCompare,
         },
         {
           symbol: b,
           fundamentals: bFund,
           score: bScored,
-          priceTargets: bTargets,
+          priceTargets: bTargetsE,
           compare: bCompare,
         },
       ],
