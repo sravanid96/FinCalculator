@@ -416,12 +416,97 @@ function rsiPcrSentimentClass(pt: PriceTargets | undefined) {
   return green ? "text-green-600 font-semibold" : "text-red-600 font-semibold";
 }
 
+/** Label + value rows so percentages never visually run together. */
+function UpsidePctBlock({ pt }: { pt: PriceTargets | undefined }) {
+  if (pt == null || (pt.blendedImpliedUpsidePct == null && pt.impliedUpsideToBullPct == null)) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  return (
+    <div className="flex flex-col gap-1.5 min-w-[6.75rem]">
+      {pt.blendedImpliedUpsidePct != null && (
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Blend</span>
+          <span className={cn("tabular-nums text-xs font-medium", upsideClass(pt.blendedImpliedUpsidePct))}>
+            {fmtPct(pt.blendedImpliedUpsidePct, 0)}
+          </span>
+        </div>
+      )}
+      {pt.impliedUpsideToBullPct != null && (
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Bull</span>
+          <span className={cn("tabular-nums text-xs font-medium", upsideClass(pt.impliedUpsideToBullPct))}>
+            {fmtPct(pt.impliedUpsideToBullPct, 0)}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DownsidePctBlock({ pt }: { pt: PriceTargets | undefined }) {
+  if (
+    pt == null ||
+    (pt.impliedDownsideToBlendedFairValuePct == null &&
+      pt.impliedDownsideToBearFairValuePct == null &&
+      pt.impliedDownsideToAnalystLowPct == null)
+  ) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  return (
+    <div className="flex flex-col gap-1.5 min-w-[6.75rem]">
+      {pt.impliedDownsideToBlendedFairValuePct != null && (
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Blend</span>
+          <span className="tabular-nums text-xs font-medium text-amber-700/90">{fmtPct(pt.impliedDownsideToBlendedFairValuePct, 0)}</span>
+        </div>
+      )}
+      {pt.impliedDownsideToBearFairValuePct != null && (
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Bear</span>
+          <span className="tabular-nums text-xs font-medium text-amber-800/90">{fmtPct(pt.impliedDownsideToBearFairValuePct, 0)}</span>
+        </div>
+      )}
+      {pt.impliedDownsideToAnalystLowPct != null && (
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Low</span>
+          <span className="tabular-nums text-xs font-medium text-amber-900/85">{fmtPct(pt.impliedDownsideToAnalystLowPct, 0)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RsiPcrInline({
+  pt,
+  align = "end",
+}: {
+  pt: PriceTargets | undefined;
+  align?: "end" | "start";
+}) {
+  if (!pt) return null;
+  return (
+    <div
+      className={cn(
+        "mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-0.5 border-t border-border/60 pt-1.5 text-[11px] tabular-nums",
+        align === "end" ? "justify-end" : "justify-start",
+        rsiPcrSentimentClass(pt),
+      )}
+    >
+      <span>
+        RSI <span className="font-semibold">{pt.rsi14 != null ? pt.rsi14.toFixed(0) : "—"}</span>
+      </span>
+      <span>
+        PCR <span className="font-semibold">{pt.putCallRatio != null ? pt.putCallRatio.toFixed(2) : "—"}</span>
+      </span>
+    </div>
+  );
+}
+
 /** One ticker — stacked card layout for narrow viewports. */
 function QualityRowMobileCard({ row: r }: { row: QualityRow }) {
   const pt = r.priceTargets;
   const buyB = buyBandBounds(pt);
   const sellB = sellBandBounds(pt);
-  const lineCls = rsiPcrSentimentClass(pt);
   const valueRange = pt
     ? fmtUsdRange(
         pt.valueZoneFundamentalLow ?? pt.valueZoneLow,
@@ -430,7 +515,7 @@ function QualityRowMobileCard({ row: r }: { row: QualityRow }) {
     : "—";
 
   return (
-    <article className="rounded-xl border border-border/70 bg-card px-4 py-4 shadow-sm space-y-4">
+    <article className="rounded-xl border border-border/70 bg-card px-4 py-4 shadow-sm space-y-4 touch-manipulation">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -517,7 +602,7 @@ function QualityRowMobileCard({ row: r }: { row: QualityRow }) {
         </div>
         <div className="rounded-lg bg-muted/40 px-3 py-3 space-y-2">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-            <Hint content={H.buyZone}>Buy band</Hint>
+            <Hint content={H.buyZone}>Buy zone</Hint>
           </div>
           {buyB.lo != null && buyB.hi != null ? (
             <p className="text-sm font-medium tabular-nums leading-snug">{bandRangeLine(buyB.lo, buyB.hi)}</p>
@@ -538,64 +623,22 @@ function QualityRowMobileCard({ row: r }: { row: QualityRow }) {
           ) : (
             <p className="text-[11px] text-muted-foreground/80">No price band (need history)</p>
           )}
-          <div className="border-t border-border/60 pt-2 mt-2 space-y-1.5">
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Sentiment</p>
-            <div className={`flex justify-between text-xs ${lineCls}`}>
-              <span>RSI</span>
-              <span className="tabular-nums">{pt?.rsi14 != null ? pt.rsi14.toFixed(0) : "—"}</span>
-            </div>
-            <div className={`flex justify-between text-xs ${lineCls}`}>
-              <span>PCR</span>
-              <span className="tabular-nums">{pt?.putCallRatio != null ? pt.putCallRatio.toFixed(2) : "—"}</span>
-            </div>
-          </div>
+          <RsiPcrInline pt={pt} align="start" />
         </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <div className="rounded-lg border border-border/50 px-3 py-2">
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+        <div className="rounded-lg border border-border/50 px-3 py-3">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">
             <Hint content={H.upsideRR}>Upside %</Hint>
           </p>
-          {pt?.blendedImpliedUpsidePct == null && pt?.impliedUpsideToBullPct == null ? (
-            <span className="text-xs text-muted-foreground">—</span>
-          ) : (
-            <div className="space-y-1 text-xs">
-              <div className={upsideClass(pt?.blendedImpliedUpsidePct ?? null)}>
-                Blend {pt?.blendedImpliedUpsidePct != null ? fmtPct(pt.blendedImpliedUpsidePct, 0) : "—"}
-              </div>
-              <div className={upsideClass(pt?.impliedUpsideToBullPct ?? null)}>
-                Bull {pt?.impliedUpsideToBullPct != null ? fmtPct(pt.impliedUpsideToBullPct, 0) : ""}
-              </div>
-            </div>
-          )}
+          <UpsidePctBlock pt={pt} />
         </div>
-        <div className="rounded-lg border border-border/50 px-3 py-2">
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+        <div className="rounded-lg border border-border/50 px-3 py-3">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">
             <Hint content={H.downsideRR}>Downside %</Hint>
           </p>
-          <div className="space-y-1 text-xs text-amber-800/95">
-            <div className="flex justify-between gap-2">
-              <span>Blend</span>
-              <span className="tabular-nums">
-                {pt?.impliedDownsideToBlendedFairValuePct != null
-                  ? fmtPct(pt.impliedDownsideToBlendedFairValuePct, 0)
-                  : "—"}
-              </span>
-            </div>
-            <div className="flex justify-between gap-2">
-              <span>Bear</span>
-              <span className="tabular-nums">
-                {pt?.impliedDownsideToBearFairValuePct != null ? fmtPct(pt.impliedDownsideToBearFairValuePct, 0) : ""}
-              </span>
-            </div>
-            <div className="flex justify-between gap-2">
-              <span>Low</span>
-              <span className="tabular-nums">
-                {pt?.impliedDownsideToAnalystLowPct != null ? fmtPct(pt.impliedDownsideToAnalystLowPct, 0) : ""}
-              </span>
-            </div>
-          </div>
+          <DownsidePctBlock pt={pt} />
         </div>
       </div>
 
@@ -611,7 +654,7 @@ function QualityRowMobileCard({ row: r }: { row: QualityRow }) {
       )}
 
       <details className="group rounded-lg border border-dashed border-border/60 px-3 py-2">
-        <summary className="cursor-pointer text-xs font-medium text-muted-foreground list-none flex items-center justify-between [&::-webkit-details-marker]:hidden">
+        <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground list-none flex min-h-10 items-center justify-between gap-2 py-1 [&::-webkit-details-marker]:hidden">
           <span>Long-term role + Live</span>
           <span className="text-[10px] text-muted-foreground/70 group-open:hidden">Tap to expand</span>
           <span className="text-[10px] text-muted-foreground/70 hidden group-open:inline">Tap to collapse</span>
@@ -899,19 +942,20 @@ function QualityResults({ data }: { data: QualityResponse }) {
         <CardContent className="p-0">
           <p className="px-4 pt-3 pb-2 text-[11px] text-muted-foreground leading-relaxed">
             <span className="hidden lg:inline">
-              Hover dotted underlines on headers and values for definitions. Table scrolls horizontally when needed.
+              Hover dotted underlines on headers and values for definitions. The table is wide — scroll horizontally
+              when your window is narrower than the full grid.
             </span>
             <span className="lg:hidden">
-              On narrow screens, each ticker is a card so nothing is squeezed sideways. Rotate or use a wider
-              window for the full scrolling table.
+              Below the breakpoint, each ticker is a card so nothing is squeezed sideways. Wider windows use the full
+              scrolling table.
             </span>
           </p>
-          <div className="lg:hidden px-3 pb-4 space-y-3 max-w-2xl mx-auto">
+          <div className="lg:hidden px-3 pb-4 space-y-4">
             {data.rows.map((r) => (
               <QualityRowMobileCard key={r.symbol} row={r} />
             ))}
           </div>
-          <div className="hidden lg:block overflow-x-auto pb-2">
+          <div className="hidden lg:block overflow-x-auto pb-2 -mx-1 px-1">
           <Table className="min-w-[1580px] w-full">
             <TableHeader>
               <TableRow className="align-top hover:bg-transparent">
@@ -953,13 +997,13 @@ function QualityResults({ data }: { data: QualityResponse }) {
                 <TableHead className="min-w-[104px] text-right">
                   <Hint content={H.buyZone}>Buy zone</Hint>
                 </TableHead>
-                <TableHead className="min-w-[112px] text-right">
+                <TableHead className="min-w-[128px] text-right">
                   <Hint content={H.sellTrigger}>Sell trigger</Hint>
                 </TableHead>
-                <TableHead className="min-w-[72px] text-right">
+                <TableHead className="min-w-[108px] text-right">
                   <Hint content={H.upsideRR}>Upside %</Hint>
                 </TableHead>
-                <TableHead className="min-w-[72px] text-right">
+                <TableHead className="min-w-[108px] text-right">
                   <Hint content={H.downsideRR}>Downside %</Hint>
                 </TableHead>
                 <TableHead className="min-w-[200px]">
@@ -1146,14 +1190,14 @@ function QualityResults({ data }: { data: QualityResponse }) {
                       }
                     >
                       {r.priceTargets ? (
-                        <>
+                        <div className="flex flex-col items-end text-right">
                           {r.priceTargets.sellZoneKeltnerUpper != null ||
                           r.priceTargets.sellZoneAnchoredVwap != null ? (
                             (() => {
                               const s = sellBandBounds(r.priceTargets);
                               if (s.lo == null || s.hi == null) {
                                 return (
-                                  <div className="text-muted-foreground/70 text-[10px] mb-1">No price band</div>
+                                  <div className="mb-1 text-[10px] text-muted-foreground/70">No price band</div>
                                 );
                               }
                               return (
@@ -1161,21 +1205,16 @@ function QualityResults({ data }: { data: QualityResponse }) {
                               );
                             })()
                           ) : (
-                            <div className="text-muted-foreground/70 text-[10px] mb-1">No price band</div>
+                            <div className="mb-1 text-[10px] text-muted-foreground/70">No price band</div>
                           )}
-                          <div
-                            className={`mt-2 space-y-1 border-t border-border/60 pt-2 ${rsiPcrSentimentClass(r.priceTargets)}`}
-                          >
-                            <div>RSI {r.priceTargets.rsi14 != null ? r.priceTargets.rsi14.toFixed(0) : "—"}</div>
-                            <div>PCR {r.priceTargets.putCallRatio != null ? r.priceTargets.putCallRatio.toFixed(2) : "—"}</div>
-                          </div>
-                        </>
+                          <RsiPcrInline pt={r.priceTargets} />
+                        </div>
                       ) : (
                         "—"
                       )}
                     </HintWrap>
                   </TableCell>
-                  <TableCell className="text-right text-[10px] leading-snug tabular-nums py-3 align-top">
+                  <TableCell className="text-right py-3 align-top">
                     <HintWrap
                       content={
                         r.priceTargets
@@ -1192,26 +1231,12 @@ function QualityResults({ data }: { data: QualityResponse }) {
                           : H.upsideRR
                       }
                     >
-                      {r.priceTargets?.blendedImpliedUpsidePct == null &&
-                      r.priceTargets?.impliedUpsideToBullPct == null ? (
-                        <span className="text-muted-foreground">—</span>
-                      ) : (
-                        <>
-                          <div className={upsideClass(r.priceTargets?.blendedImpliedUpsidePct ?? null)}>
-                            {r.priceTargets?.blendedImpliedUpsidePct != null
-                              ? `Blend ${fmtPct(r.priceTargets.blendedImpliedUpsidePct, 0)}`
-                              : ""}
-                          </div>
-                          <div className={upsideClass(r.priceTargets?.impliedUpsideToBullPct ?? null)}>
-                            {r.priceTargets?.impliedUpsideToBullPct != null
-                              ? `Bull ${fmtPct(r.priceTargets.impliedUpsideToBullPct, 0)}`
-                              : ""}
-                          </div>
-                        </>
-                      )}
+                      <div className="inline-flex flex-col items-end">
+                        <UpsidePctBlock pt={r.priceTargets} />
+                      </div>
                     </HintWrap>
                   </TableCell>
-                  <TableCell className="text-right text-[10px] leading-snug tabular-nums py-3 align-top">
+                  <TableCell className="text-right py-3 align-top">
                     <HintWrap
                       content={
                         r.priceTargets
@@ -1229,29 +1254,9 @@ function QualityResults({ data }: { data: QualityResponse }) {
                           : H.downsideRR
                       }
                     >
-                      {r.priceTargets?.impliedDownsideToBlendedFairValuePct == null &&
-                      r.priceTargets?.impliedDownsideToBearFairValuePct == null &&
-                      r.priceTargets?.impliedDownsideToAnalystLowPct == null ? (
-                        <span className="text-muted-foreground">—</span>
-                      ) : (
-                        <>
-                          <div className="text-amber-700/90">
-                            {r.priceTargets?.impliedDownsideToBlendedFairValuePct != null
-                              ? `Blend ${fmtPct(r.priceTargets.impliedDownsideToBlendedFairValuePct, 0)}`
-                              : ""}
-                          </div>
-                          <div className="text-amber-800/90">
-                            {r.priceTargets?.impliedDownsideToBearFairValuePct != null
-                              ? `Bear ${fmtPct(r.priceTargets.impliedDownsideToBearFairValuePct, 0)}`
-                              : ""}
-                          </div>
-                          <div className="text-amber-900/85">
-                            {r.priceTargets?.impliedDownsideToAnalystLowPct != null
-                              ? `Low ${fmtPct(r.priceTargets.impliedDownsideToAnalystLowPct, 0)}`
-                              : ""}
-                          </div>
-                        </>
-                      )}
+                      <div className="inline-flex flex-col items-end">
+                        <DownsidePctBlock pt={r.priceTargets} />
+                      </div>
                     </HintWrap>
                   </TableCell>
                   <TableCell className="text-[11px] leading-tight py-3 align-top">

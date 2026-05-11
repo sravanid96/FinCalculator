@@ -2998,5 +2998,160 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  // ---------- Brokerage activity (Robinhood-style monthly CSVs) ----------
+  const {
+    parseBrokerageCsvRows,
+    toInsertRow,
+    aggregateActivities,
+    buildSignature,
+  } = await import("./services/brokerageAggregation");
+
+  app.post(
+    "/api/brokerage/upload",
+    isAuthenticated,
+    upload.single("file"),
+    async (req: any, res) => {
+      try {
+        const userId = getUserId(req);
+        if (!userId) return res.status(401).json({ message: "Unauthorized" });
+        const file = req.file;
+        if (!file) return res.status(400).json({ message: "No file uploaded" });
+        if (!file.originalname.toLowerCase().endsWith(".csv")) {
+          return res.status(400).json({ message: "Only CSV files are supported for brokerage upload" });
+        }
+
+        const text = file.buffer.toString("utf-8");
+        const firstLines = text.split("\n").slice(0, 5).join("\n");
+        let delimiter = ",";
+        let maxCount = 0;
+        for (const d of [",", ";", "\t", "|"]) {
+          const count = (firstLines.match(new RegExp(d === "\t" ? "\\t" : `\\${d}`, "g")) ?? []).length;
+          if (count > maxCount) {
+            maxCount = count;
+            delimiter = d;
+          }
+        }
+
+        let records: Array<Record<string, string>> = [];
+        try {
+          records = parse(text, {
+            columns: true,
+            skip_empty_lines: true,
+            trim: true,
+            delimiter,
+            relax_column_count: true,
+            relax_quotes: true,
+            skip_records_with_error: true,
+            cast: false,
+          }) as Array<Record<string, string>>;
+        } catch (csvErr: any) {
+          return res.status(400).json({
+            message: "Failed to parse CSV",
+            error: csvErr.message ?? String(csvErr),
+          });
+        }
+
+        const parsed = parseBrokerageCsvRows(records);
+        if (parsed.length === 0) {
+          return res.status(400).json({
+            message: "No brokerage activity rows recognized in CSV",
+          });
+        }
+
+        // Self-heal: collapse pre-existing dupes from older hash schemes before
+        // computing the seen-signatures set for this upload.
+        const housekeeping = await storage.dedupAndRehashBrokerageActivities(userId);
+        const existing = await storage.getBrokerageActivities(userId);
+        const seen = new Set<string>();
+        for (const row of existing) {
+          seen.add(buildSignature(row));
+        }
+
+        let duplicatesInFile = 0;
+        let duplicatesAgainstExisting = 0;
+        const newRows: ReturnType<typeof toInsertRow>[] = [];
+        const newSignatures = new Set<string>();
+
+        for (const row of parsed) {
+          const sig = buildSignature(row);
+          if (seen.has(sig)) {
+            duplicatesAgainstExisting += 1;
+            continue;
+          }
+          if (newSignatures.has(sig)) {
+            duplicatesInFile += 1;
+            continue;
+          }
+          newSignatures.add(sig);
+          newRows.push(toInsertRow(userId, row, file.originalname));
+        }
+
+        const inserted = await storage.insertBrokerageActivities(newRows);
+        const activities = await storage.getBrokerageActivities(userId);
+        const portfolio = aggregateActivities(activities);
+
+        res.json({
+          imported: inserted,
+          skippedAsDuplicates: duplicatesAgainstExisting + duplicatesInFile,
+          duplicatesAgainstExisting,
+          duplicatesInFile,
+          deduplicatedExistingRows: housekeeping.deduplicated,
+          rehashedExistingRows: housekeeping.rehashed,
+          totalActivities: activities.length,
+          portfolio,
+        });
+      } catch (error: any) {
+        console.error("Error uploading brokerage CSV:", error);
+        res.status(500).json({
+          message: "Failed to import brokerage CSV",
+          error: error.message ?? String(error),
+        });
+      }
+    }
+  );
+
+  app.get("/api/brokerage/positions", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ message: "Unauthorized" });
+      const activities = await storage.getBrokerageActivities(userId);
+      const portfolio = aggregateActivities(activities);
+      res.json({ portfolio, totalActivities: activities.length });
+    } catch (error: any) {
+      console.error("Error computing brokerage positions:", error);
+      res.status(500).json({ message: "Failed to compute positions", error: error.message ?? String(error) });
+    }
+  });
+
+  app.post("/api/brokerage/rehash", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ message: "Unauthorized" });
+      const housekeeping = await storage.dedupAndRehashBrokerageActivities(userId);
+      const activities = await storage.getBrokerageActivities(userId);
+      const portfolio = aggregateActivities(activities);
+      res.json({
+        ...housekeeping,
+        totalActivities: activities.length,
+        portfolio,
+      });
+    } catch (error: any) {
+      console.error("Error rehashing brokerage activities:", error);
+      res.status(500).json({ message: "Failed to rehash activities" });
+    }
+  });
+
+  app.delete("/api/brokerage/activities", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ message: "Unauthorized" });
+      const removed = await storage.clearBrokerageActivities(userId);
+      res.json({ removed });
+    } catch (error: any) {
+      console.error("Error clearing brokerage activities:", error);
+      res.status(500).json({ message: "Failed to clear activities" });
+    }
+  });
+
   return httpServer;
 }

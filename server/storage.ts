@@ -7,6 +7,7 @@ import {
   userPreferences,
   csvMappings,
   tradeJournal,
+  brokerageActivities,
   type User,
   type UpsertUser,
   type Account,
@@ -23,10 +24,13 @@ import {
   type InsertCsvMapping,
   type TradeJournalEntry,
   type InsertTradeJournal,
+  type BrokerageActivity,
+  type InsertBrokerageActivity,
   DEFAULT_CATEGORIES,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, desc, gte, lte, sql, ilike, or } from "drizzle-orm";
+import { eq, and, desc, gte, lte, sql, ilike, or, inArray } from "drizzle-orm";
+import { buildSignature, buildRowHash } from "./services/brokerageAggregation";
 
 export interface IStorage {
   // User operations
@@ -101,6 +105,14 @@ export interface IStorage {
     updates: Partial<InsertTradeJournal>
   ): Promise<TradeJournalEntry | undefined>;
   deleteTradeJournalEntry(userId: string, id: string): Promise<void>;
+
+  // Brokerage activity (CSV-imported transactions)
+  getBrokerageActivities(userId: string): Promise<BrokerageActivity[]>;
+  insertBrokerageActivities(rows: InsertBrokerageActivity[]): Promise<number>;
+  clearBrokerageActivities(userId: string): Promise<number>;
+  dedupAndRehashBrokerageActivities(
+    userId: string
+  ): Promise<{ deduplicated: number; rehashed: number }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -476,6 +488,99 @@ export class DatabaseStorage implements IStorage {
 
   async deleteTradeJournalEntry(userId: string, id: string): Promise<void> {
     await db.delete(tradeJournal).where(and(eq(tradeJournal.id, id), eq(tradeJournal.userId, userId)));
+  }
+
+  async getBrokerageActivities(userId: string): Promise<BrokerageActivity[]> {
+    return db
+      .select()
+      .from(brokerageActivities)
+      .where(eq(brokerageActivities.userId, userId))
+      .orderBy(desc(brokerageActivities.activityDate));
+  }
+
+  async insertBrokerageActivities(rows: InsertBrokerageActivity[]): Promise<number> {
+    if (rows.length === 0) return 0;
+    const inserted = await db
+      .insert(brokerageActivities)
+      .values(rows)
+      .onConflictDoNothing({
+        target: [brokerageActivities.userId, brokerageActivities.rowHash],
+      })
+      .returning({ id: brokerageActivities.id });
+    return inserted.length;
+  }
+
+  async clearBrokerageActivities(userId: string): Promise<number> {
+    const deleted = await db
+      .delete(brokerageActivities)
+      .where(eq(brokerageActivities.userId, userId))
+      .returning({ id: brokerageActivities.id });
+    return deleted.length;
+  }
+
+  /**
+   * Idempotent. Walks the user's brokerage activities and:
+   *   1. Collapses rows that share the new dedup signature (same date + instrument +
+   *      trans code + qty + price + amount) into a single canonical row, deleting the
+   *      duplicates that were imported under the older description-inclusive scheme.
+   *   2. Updates the canonical row's rowHash to match the new signature-based hash so
+   *      future uploads benefit from the DB unique index too.
+   */
+  async dedupAndRehashBrokerageActivities(
+    userId: string
+  ): Promise<{ deduplicated: number; rehashed: number }> {
+    const rows = await db
+      .select()
+      .from(brokerageActivities)
+      .where(eq(brokerageActivities.userId, userId));
+
+    if (rows.length === 0) {
+      return { deduplicated: 0, rehashed: 0 };
+    }
+
+    const groups = new Map<string, BrokerageActivity[]>();
+    for (const row of rows) {
+      const sig = buildSignature(row);
+      const bucket = groups.get(sig);
+      if (bucket) {
+        bucket.push(row);
+      } else {
+        groups.set(sig, [row]);
+      }
+    }
+
+    const toDelete: string[] = [];
+    const toRehash: Array<{ id: string; hash: string }> = [];
+
+    for (const [, group] of Array.from(groups.entries())) {
+      const sorted = [...group].sort((a, b) => {
+        const aCreated = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bCreated = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        if (aCreated !== bCreated) return aCreated - bCreated;
+        return a.id.localeCompare(b.id);
+      });
+      const canonical = sorted[0];
+      for (let i = 1; i < sorted.length; i += 1) {
+        toDelete.push(sorted[i].id);
+      }
+      const expectedHash = buildRowHash(canonical);
+      if (canonical.rowHash !== expectedHash) {
+        toRehash.push({ id: canonical.id, hash: expectedHash });
+      }
+    }
+
+    if (toDelete.length > 0) {
+      await db.delete(brokerageActivities).where(inArray(brokerageActivities.id, toDelete));
+    }
+
+    for (const item of toRehash) {
+      await db
+        .update(brokerageActivities)
+        .set({ rowHash: item.hash })
+        .where(eq(brokerageActivities.id, item.id));
+    }
+
+    return { deduplicated: toDelete.length, rehashed: toRehash.length };
   }
 }
 

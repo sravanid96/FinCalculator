@@ -10,6 +10,7 @@ import {
   Wallet,
   LineChart,
   HeartPulse,
+  Briefcase,
 } from "lucide-react";
 import {
   Sidebar,
@@ -32,6 +33,11 @@ const mainNavItems = [
     title: "Dashboard",
     url: "/",
     icon: LayoutDashboard,
+  },
+  {
+    title: "Positions",
+    url: "/positions",
+    icon: Briefcase,
   },
   {
     title: "Options",

@@ -11,6 +11,7 @@ import { useAuth } from "@/hooks/useAuth";
 import Landing from "@/pages/Landing";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
+import Positions from "@/pages/Positions";
 import Options from "@/pages/Options";
 import Transactions from "@/pages/Transactions";
 import Categories from "@/pages/Categories";
@@ -47,6 +48,7 @@ function AuthenticatedRouter() {
     <AuthenticatedLayout>
       <Switch>
         <Route path="/" component={Dashboard} />
+        <Route path="/positions" component={Positions} />
         <Route path="/options" component={Options} />
         <Route path="/health" component={Health} />
         <Route path="/transactions" component={Transactions} />

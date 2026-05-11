@@ -8,6 +8,7 @@ import {
   boolean,
   integer,
   index,
+  uniqueIndex,
   jsonb,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
@@ -193,6 +194,40 @@ export const optionsWatchlist = pgTable(
 
 export type OptionsWatchlistRow = typeof optionsWatchlist.$inferSelect;
 
+// Raw brokerage activity rows imported from monthly CSV exports.
+// Aggregated client-side/server-side into positions, gains, and option P&L.
+export const brokerageActivities = pgTable(
+  "brokerage_activities",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    activityDate: timestamp("activity_date").notNull(),
+    processDate: timestamp("process_date"),
+    settleDate: timestamp("settle_date"),
+    instrument: varchar("instrument"),
+    description: text("description").notNull(),
+    transCode: varchar("trans_code").notNull(),
+    quantity: decimal("quantity", { precision: 20, scale: 8 }),
+    price: decimal("price", { precision: 20, scale: 6 }),
+    amount: decimal("amount", { precision: 18, scale: 2 }).notNull(),
+    optionType: varchar("option_type"),
+    optionStrike: decimal("option_strike", { precision: 18, scale: 4 }),
+    optionExpiration: timestamp("option_expiration"),
+    rowHash: varchar("row_hash").notNull(),
+    sourceFileName: varchar("source_file_name"),
+    createdAt: timestamp("created_at").defaultNow(),
+  },
+  (table) => [
+    index("idx_brokerage_user_date").on(table.userId, table.activityDate),
+    uniqueIndex("uq_brokerage_user_hash").on(table.userId, table.rowHash),
+  ]
+);
+
+export type BrokerageActivity = typeof brokerageActivities.$inferSelect;
+export type InsertBrokerageActivity = typeof brokerageActivities.$inferInsert;
+
 // Relations
 export const usersRelations = relations(users, ({ many, one }) => ({
   accounts: many(accounts),
@@ -201,6 +236,11 @@ export const usersRelations = relations(users, ({ many, one }) => ({
   preferences: one(userPreferences),
   tradeJournalEntries: many(tradeJournal),
   optionsWatchlistEntries: many(optionsWatchlist),
+  brokerageActivities: many(brokerageActivities),
+}));
+
+export const brokerageActivitiesRelations = relations(brokerageActivities, ({ one }) => ({
+  user: one(users, { fields: [brokerageActivities.userId], references: [users.id] }),
 }));
 
 export const tradeJournalRelations = relations(tradeJournal, ({ one }) => ({
