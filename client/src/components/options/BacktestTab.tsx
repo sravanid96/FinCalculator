@@ -35,7 +35,11 @@ const YEARS_OPTIONS = [
   { value: "5", label: "5 years" },
 ];
 
-function edgeBadge(edge: BacktestSymbolResult["historicalEdge"]): JSX.Element {
+function edgeBadge(edge: BacktestSymbolResult["historicalEdge"] | undefined): JSX.Element {
+  const safe: BacktestSymbolResult["historicalEdge"] =
+    edge === "strong" || edge === "positive" || edge === "flat" || edge === "negative"
+      ? edge
+      : "flat";
   const map: Record<
     BacktestSymbolResult["historicalEdge"],
     { label: string; cls: string }
@@ -45,7 +49,7 @@ function edgeBadge(edge: BacktestSymbolResult["historicalEdge"]): JSX.Element {
     flat: { label: "Flat / small sample", cls: "border-slate-300 bg-slate-500/10 text-slate-600" },
     negative: { label: "Negative", cls: "border-red-400 bg-red-500/15 text-red-700" },
   };
-  const { label, cls } = map[edge];
+  const { label, cls } = map[safe];
   return (
     <Badge variant="outline" className={`text-[10px] ${cls}`}>
       {label}
@@ -142,7 +146,11 @@ export function BacktestTab({
       }
 
       try {
-        return (await res.json()) as BacktestTop20Response;
+        const parsed = (await res.json()) as BacktestTop20Response;
+        if (!parsed || !Array.isArray(parsed.results)) {
+          throw new Error("Backtest response missing results array");
+        }
+        return parsed;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         throw new Error(`Got 200 OK but response body isn't valid JSON: ${msg}`);

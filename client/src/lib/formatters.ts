@@ -1,9 +1,15 @@
 export function formatCurrency(
-  amount: number | string,
+  amount: number | string | null | undefined,
   currency: string = "USD",
   options?: Intl.NumberFormatOptions
 ): string {
-  const numAmount = typeof amount === "string" ? parseFloat(amount) : amount;
+  if (amount === null || amount === undefined || amount === "") {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency, ...options }).format(0);
+  }
+  const numAmount = typeof amount === "string" ? parseFloat(amount) : Number(amount);
+  if (!Number.isFinite(numAmount)) {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency, ...options }).format(0);
+  }
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency,
@@ -13,8 +19,12 @@ export function formatCurrency(
   }).format(numAmount);
 }
 
-export function formatCompactCurrency(amount: number | string, currency: string = "USD"): string {
-  const numAmount = typeof amount === "string" ? parseFloat(amount) : amount;
+export function formatCompactCurrency(amount: number | string | null | undefined, currency: string = "USD"): string {
+  if (amount === null || amount === undefined || amount === "") {
+    return formatCurrency(0, currency);
+  }
+  const numAmount = typeof amount === "string" ? parseFloat(amount) : Number(amount);
+  if (!Number.isFinite(numAmount)) return formatCurrency(0, currency);
   const absAmount = Math.abs(numAmount);
   
   if (absAmount >= 1000000) {

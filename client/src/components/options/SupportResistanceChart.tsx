@@ -14,6 +14,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { BarChart3, Loader2, ArrowUp, ArrowDown } from "lucide-react";
+import { fetchApi } from "@/lib/queryClient";
 import type { SupportResistanceLevel, PriceDataPoint } from "@shared/optionsSchema";
 
 interface SupportResistanceChartProps {
@@ -34,7 +35,7 @@ export function SupportResistanceChart({
   }>({
     queryKey: ["/api/options/support-resistance", symbol],
     queryFn: async () => {
-      const res = await fetch(`/api/options/support-resistance/${symbol}`);
+      const res = await fetchApi(`/api/options/support-resistance/${encodeURIComponent(symbol)}`);
       if (!res.ok) throw new Error("Failed to fetch historical data");
       return res.json();
     },

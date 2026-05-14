@@ -29,6 +29,7 @@ import {
   Eye,
   EyeOff,
 } from "lucide-react";
+import { fetchApi } from "@/lib/queryClient";
 import type { SupportResistanceLevel, PriceDataPoint } from "@shared/optionsSchema";
 
 interface TechnicalIndicatorsChartProps {
@@ -77,7 +78,7 @@ export function TechnicalIndicatorsChart({
     queryKey: ["/api/options/historical", symbol, timeRange],
     queryFn: async () => {
       const months = timeRange === "3m" ? 3 : timeRange === "6m" ? 6 : 12;
-      const res = await fetch(`/api/options/historical/${symbol}?months=${months}`);
+      const res = await fetchApi(`/api/options/historical/${encodeURIComponent(symbol)}?months=${months}`);
       if (!res.ok) throw new Error("Failed to fetch historical data");
       return res.json();
     },

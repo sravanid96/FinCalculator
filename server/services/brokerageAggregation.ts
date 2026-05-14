@@ -213,18 +213,27 @@ interface OpenOptionLeg {
   activityDate: string;
 }
 
+/** FIFO lot for stock; ACATI lots use unitCost 0 (no basis in CSV). */
+interface StockLot {
+  qty: number;
+  unitCost: number;
+}
+
 interface SymbolAccumulator {
   symbol: string;
-  shares: number;
-  costBasis: number;
+  lots: StockLot[];
+  stockInvestedExclACATI: number;
   totalBuyCostEver: number;
   stockRealizedPnl: number;
   dividends: number;
   optionPremiumCollectedGross: number;
+  /** Net opening premium: sum(STO amount) + sum(BTO amount) as signed cash flows. */
+  optionOpeningPremiumNet: number;
   optionRealizedPnl: number;
   optionPremiumOpenCredit: number;
   optionOpenDebit: number;
   openOptionLegs: OpenOptionLeg[];
+  hasACATI: boolean;
 }
 
 export interface SymbolSummary {
@@ -232,18 +241,25 @@ export interface SymbolSummary {
   shares: number;
   avgCost: number;
   currentBasis: number;
+  /** Sum of Buy cash outflows (absolute), excluding ACATI — per spec Section 2. */
+  stockInvestedExclACATI: number;
   totalBuyCostEver: number;
   stockRealizedPnl: number;
   dividends: number;
+  /** Sum of STO amounts only (gross short credits) — header card + gross label. */
   optionPremiumCollectedGross: number;
+  /** STO + BTO opening cash, signed — per spec "option premium" column. */
+  optionOpeningPremiumNet: number;
   optionRealizedPnl: number;
   optionPremiumOpenCredit: number;
   optionOpenDebit: number;
   optionsGainPct: number | null;
+  /** Stock realized + option realized only (dividends excluded). */
   totalRealizedPnl: number;
   totalGainPct: number | null;
   hasOpenStock: boolean;
   hasOpenOptions: boolean;
+  hasACATIBasisUnknown: boolean;
   openOptionLegs: OpenOptionLeg[];
 }
 
@@ -258,8 +274,15 @@ export interface PeriodBucket {
   optionRealizedPnl: number;
   dividends: number;
   cashDeposits: number;
+  /** ACH deposit inflows only (positive amounts). */
+  bankDeposits: number;
   cashWithdrawals: number;
-  interest: number;
+  /** MINT — margin interest charged (typically negative). */
+  marginInterest: number;
+  /** INT — cash / sweep interest (typically positive). */
+  cashInterest: number;
+  /** Running sum of `bankDeposits` (ACH inflows) through this period. */
+  cumulativeDeposited: number;
   netCashFlow: number;
 }
 
@@ -269,11 +292,18 @@ export interface PortfolioTotals {
   totalStockBasis: number;
   totalOpenOptionDebit: number;
   totalOpenOptionCredit: number;
+  /** Stocks + options + CDIV/MDIV/DTAX net (all-time). */
   totalRealizedPnl: number;
   totalDividends: number;
   totalOptionRealizedPnl: number;
   totalStockRealizedPnl: number;
   totalOptionPremiumCollectedGross: number;
+  /** Distinct non-empty instruments ever seen (any trans). */
+  symbolsEverActive: number;
+  /** Sum of MINT amounts (margin interest; usually negative). */
+  totalMarginInterest: number;
+  /** Sum of INT amounts (cash sweep interest). */
+  totalCashInterest: number;
   rowCount: number;
   lastActivityDate: string | null;
   cashFlow: number;
@@ -289,11 +319,82 @@ const OPTION_CLOSE_SHORT = new Set(["BTC"]);
 const OPTION_CLOSE_LONG = new Set(["STC"]);
 const OPTION_EXPIRE = new Set(["OEXP", "EXP"]);
 const OPTION_ASSIGN = new Set(["OASGN", "ASGN"]);
-const DIVIDEND_CODES = new Set(["CDIV", "MDIV", "DIV"]);
-const CASH_CODES = new Set(["ACH", "MINT", "INT", "WIRE", "ACATS"]);
+const SYMBOL_DIVIDEND_CODES = new Set(["CDIV", "MDIV", "DIV"]);
+const DTAX_CODE = "DTAX";
+/** Account-level cash / fees — never attribute to symbol P&L (spec Section 2 / bugs). */
+const ACCOUNT_ONLY_CODES = new Set([
+  "ACH",
+  "MINT",
+  "MISC",
+  "ABIP",
+  "DTAX",
+  "INT",
+  "WIRE",
+  "ACATS",
+]);
+const CASH_FLOW_CODES = new Set(Array.from(ACCOUNT_ONLY_CODES));
+const ACH_DEPOSIT_CODE = "ACH";
 
-function legKey(leg: { type: string; strike: number; expiration: string }): string {
-  return `${leg.type}|${leg.strike}|${leg.expiration}`;
+function consolidateOpenOptionLegs(legs: OpenOptionLeg[]): OpenOptionLeg[] {
+  const map = new Map<string, OpenOptionLeg>();
+  for (const leg of legs) {
+    const key = `${leg.side}|${leg.type}|${leg.strike}|${leg.expiration}`;
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, { ...leg });
+    } else {
+      existing.contracts += leg.contracts;
+      existing.netCashAtOpen += leg.netCashAtOpen;
+      if (leg.activityDate < existing.activityDate) existing.activityDate = leg.activityDate;
+    }
+  }
+  return Array.from(map.values());
+}
+
+function lotShares(lots: StockLot[]): number {
+  return lots.reduce((s, l) => s + l.qty, 0);
+}
+
+function lotCostBasis(lots: StockLot[]): number {
+  return lots.reduce((s, l) => s + l.qty * l.unitCost, 0);
+}
+
+function fifoSellStock(
+  lots: StockLot[],
+  qtyToSell: number,
+  proceeds: number
+): { realized: number; costRemoved: number } {
+  let remaining = qtyToSell;
+  let costConsumed = 0;
+  const next: StockLot[] = [];
+  for (const lot of lots) {
+    if (remaining <= 0) {
+      next.push(lot);
+      continue;
+    }
+    if (lot.qty <= remaining) {
+      costConsumed += lot.qty * lot.unitCost;
+      remaining -= lot.qty;
+    } else {
+      costConsumed += remaining * lot.unitCost;
+      next.push({ qty: lot.qty - remaining, unitCost: lot.unitCost });
+      remaining = 0;
+    }
+  }
+  lots.length = 0;
+  lots.push(...next);
+  const realized = proceeds - costConsumed;
+  return { realized, costRemoved: costConsumed };
+}
+
+function applyStockSplit(lots: StockLot[], splQty: number): void {
+  if (splQty <= 0) return;
+  const before = lotShares(lots);
+  if (before <= 0) return;
+  const factor = (before + splQty) / before;
+  for (const lot of lots) {
+    lot.qty *= factor;
+  }
 }
 
 function closeContracts(
@@ -302,6 +403,9 @@ function closeContracts(
   contractsToClose: number,
   closingCash: number
 ): { realized: number; releasedOpenCredit: number; releasedOpenDebit: number } {
+  if (!Number.isFinite(contractsToClose) || contractsToClose <= 0) {
+    return { realized: 0, releasedOpenCredit: 0, releasedOpenDebit: 0 };
+  }
   let remaining = contractsToClose;
   let realized = 0;
   let releasedOpenCredit = 0;
@@ -340,22 +444,50 @@ function closeContracts(
   return { realized, releasedOpenCredit, releasedOpenDebit };
 }
 
+function contractsToCloseOnLeg(
+  legs: OpenOptionLeg[],
+  side: "short" | "long",
+  type: "call" | "put",
+  strike: number,
+  expiration: string,
+  qty: number | null
+): number {
+  const fromRow = qty != null && Math.abs(qty) > 1e-9 ? Math.abs(qty) : 0;
+  if (fromRow > 0) return fromRow;
+  let sum = 0;
+  for (const leg of legs) {
+    if (
+      leg.side === side &&
+      leg.type === type &&
+      leg.strike === strike &&
+      leg.expiration === expiration
+    ) {
+      sum += leg.contracts;
+    }
+  }
+  return sum;
+}
+
 export function aggregateActivities(activities: BrokerageActivity[]): PortfolioTotals {
   const sorted = [...activities].sort((a, b) => {
     const da = new Date(a.activityDate).getTime();
     const db = new Date(b.activityDate).getTime();
     if (da !== db) return da - db;
-    // Within same date, opens before closes to keep state coherent.
-    const order = (code: string) =>
-      OPTION_OPEN_SHORT.has(code) || OPTION_OPEN_LONG.has(code) || STOCK_BUY_CODES.has(code)
-        ? 0
-        : 1;
-    return order(a.transCode) - order(b.transCode);
+    const codeA = a.transCode.toUpperCase();
+    const codeB = b.transCode.toUpperCase();
+    const order = (code: string) => {
+      if (OPTION_OPEN_SHORT.has(code) || OPTION_OPEN_LONG.has(code)) return 0;
+      if (STOCK_BUY_CODES.has(code) || code === "ACATI") return 0;
+      if (code === "SPL") return 1;
+      return 2;
+    };
+    return order(codeA) - order(codeB);
   });
 
   const accumulators = new Map<string, SymbolAccumulator>();
   let cashFlow = 0;
   let lastActivityDate: string | null = null;
+  const symbolsEverActive = new Set<string>();
 
   const monthBuckets = new Map<string, PeriodBucket>();
   const yearBuckets = new Map<string, PeriodBucket>();
@@ -377,8 +509,11 @@ export function aggregateActivities(activities: BrokerageActivity[]): PortfolioT
         optionRealizedPnl: 0,
         dividends: 0,
         cashDeposits: 0,
+        bankDeposits: 0,
         cashWithdrawals: 0,
-        interest: 0,
+        marginInterest: 0,
+        cashInterest: 0,
+        cumulativeDeposited: 0,
         netCashFlow: 0,
       };
       map.set(period, b);
@@ -391,27 +526,35 @@ export function aggregateActivities(activities: BrokerageActivity[]): PortfolioT
     if (!acc) {
       acc = {
         symbol,
-        shares: 0,
-        costBasis: 0,
+        lots: [],
+        stockInvestedExclACATI: 0,
         totalBuyCostEver: 0,
         stockRealizedPnl: 0,
         dividends: 0,
         optionPremiumCollectedGross: 0,
+        optionOpeningPremiumNet: 0,
         optionRealizedPnl: 0,
         optionPremiumOpenCredit: 0,
         optionOpenDebit: 0,
         openOptionLegs: [],
+        hasACATI: false,
       };
       accumulators.set(symbol, acc);
     }
     return acc;
   };
 
+  /** CDIV + MDIV + DIV + DTAX (DTAX already negative in CSV) — header + realized. */
+  let portfolioDividendsNet = 0;
+  let totalMarginInterest = 0;
+  let totalCashInterest = 0;
+
   for (const row of sorted) {
     cashFlow += Number(row.amount);
     lastActivityDate = new Date(row.activityDate).toISOString();
     const code = row.transCode.toUpperCase();
-    const symbol = (row.instrument ?? "").toUpperCase();
+    const symbol = (row.instrument ?? "").trim().toUpperCase();
+    if (symbol) symbolsEverActive.add(symbol);
     const qty = row.quantity != null ? Number(row.quantity) : null;
     const amount = Number(row.amount);
 
@@ -428,16 +571,30 @@ export function aggregateActivities(activities: BrokerageActivity[]): PortfolioT
     monthBucket.netCashFlow += amount;
     yearBucket.netCashFlow += amount;
 
-    if (CASH_CODES.has(code)) {
-      if (code === "MINT" || code === "INT") {
-        monthBucket.interest += amount;
-        yearBucket.interest += amount;
+    if (CASH_FLOW_CODES.has(code)) {
+      if (code === "MINT") {
+        monthBucket.marginInterest += amount;
+        yearBucket.marginInterest += amount;
+        totalMarginInterest += amount;
+      } else if (code === "INT") {
+        monthBucket.cashInterest += amount;
+        yearBucket.cashInterest += amount;
+        totalCashInterest += amount;
       } else if (amount >= 0) {
         monthBucket.cashDeposits += amount;
         yearBucket.cashDeposits += amount;
+        if (code === ACH_DEPOSIT_CODE) {
+          monthBucket.bankDeposits += amount;
+          yearBucket.bankDeposits += amount;
+        }
       } else {
         monthBucket.cashWithdrawals += amount;
         yearBucket.cashWithdrawals += amount;
+      }
+      if (code === DTAX_CODE) {
+        monthBucket.dividends += amount;
+        yearBucket.dividends += amount;
+        portfolioDividendsNet += amount;
       }
       continue;
     }
@@ -445,36 +602,50 @@ export function aggregateActivities(activities: BrokerageActivity[]): PortfolioT
     if (!symbol) continue;
     const acc = getAcc(symbol);
 
-    if (DIVIDEND_CODES.has(code)) {
+    if (SYMBOL_DIVIDEND_CODES.has(code)) {
       acc.dividends += amount;
       monthBucket.dividends += amount;
       yearBucket.dividends += amount;
+      portfolioDividendsNet += amount;
       continue;
     }
 
-    if (STOCK_BUY_CODES.has(code) && qty != null && qty > 0 && !row.optionType) {
+    if (code === "ACATI" && qty != null && qty > 0 && !row.optionType) {
+      acc.hasACATI = true;
+      acc.lots.push({ qty, unitCost: 0 });
+      continue;
+    }
+
+    if (code === "SPL" && qty != null && qty > 0 && !row.optionType) {
+      applyStockSplit(acc.lots, qty);
+      continue;
+    }
+
+    const isStockRow = !row.optionType;
+
+    if (STOCK_BUY_CODES.has(code) && qty != null && qty > 0 && isStockRow) {
       const cost = Math.abs(amount);
-      acc.shares += qty;
-      acc.costBasis += cost;
+      acc.lots.push({ qty, unitCost: cost / qty });
+      acc.stockInvestedExclACATI += cost;
       acc.totalBuyCostEver += cost;
       monthBucket.stockBuyAmount += cost;
       yearBucket.stockBuyAmount += cost;
       continue;
     }
 
-    if (STOCK_SELL_CODES.has(code) && qty != null && qty > 0 && !row.optionType) {
+    if (STOCK_SELL_CODES.has(code) && qty != null && qty > 0 && isStockRow) {
       const proceeds = amount;
-      const avgCost = acc.shares > 0 ? acc.costBasis / acc.shares : 0;
-      const removed = Math.min(qty, acc.shares);
-      const allocatedCost = avgCost * removed;
-      acc.shares -= removed;
-      acc.costBasis -= allocatedCost;
-      const realized = proceeds - allocatedCost;
-      acc.stockRealizedPnl += realized;
-      monthBucket.stockSellProceeds += proceeds;
-      yearBucket.stockSellProceeds += proceeds;
-      monthBucket.stockRealizedPnl += realized;
-      yearBucket.stockRealizedPnl += realized;
+      const held = lotShares(acc.lots);
+      const sellQty = Math.min(qty, held);
+      if (sellQty > 0) {
+        const proceedsPortion = qty > 0 ? (proceeds * sellQty) / qty : proceeds;
+        const { realized } = fifoSellStock(acc.lots, sellQty, proceedsPortion);
+        acc.stockRealizedPnl += realized;
+        monthBucket.stockSellProceeds += proceedsPortion;
+        yearBucket.stockSellProceeds += proceedsPortion;
+        monthBucket.stockRealizedPnl += realized;
+        yearBucket.stockRealizedPnl += realized;
+      }
       continue;
     }
 
@@ -486,9 +657,10 @@ export function aggregateActivities(activities: BrokerageActivity[]): PortfolioT
     const type: "call" | "put" = rawType;
     const strike = Number(row.optionStrike);
     const expiration = new Date(row.optionExpiration).toISOString().slice(0, 10);
-    const contracts = qty != null ? Math.abs(qty) : 1;
+    const actDateStr = new Date(row.activityDate).toISOString().slice(0, 10);
 
     if (OPTION_OPEN_SHORT.has(code)) {
+      const contracts = qty != null ? Math.abs(qty) : 1;
       acc.openOptionLegs.push({
         side: "short",
         type,
@@ -496,30 +668,36 @@ export function aggregateActivities(activities: BrokerageActivity[]): PortfolioT
         expiration,
         contracts,
         netCashAtOpen: amount,
-        activityDate: new Date(row.activityDate).toISOString().slice(0, 10),
+        activityDate: actDateStr,
       });
-      acc.optionPremiumCollectedGross += Math.max(0, amount);
+      acc.optionPremiumCollectedGross += amount;
+      acc.optionOpeningPremiumNet += amount;
       acc.optionPremiumOpenCredit += Math.max(0, amount);
-      monthBucket.optionPremiumCollected += Math.max(0, amount);
-      yearBucket.optionPremiumCollected += Math.max(0, amount);
+      monthBucket.optionPremiumCollected += amount;
+      yearBucket.optionPremiumCollected += amount;
       continue;
     }
 
     if (OPTION_OPEN_LONG.has(code)) {
+      const contracts = qty != null ? Math.abs(qty) : 1;
       acc.openOptionLegs.push({
         side: "long",
         type,
         strike,
         expiration,
         contracts,
-        netCashAtOpen: amount, // typically negative debit
-        activityDate: new Date(row.activityDate).toISOString().slice(0, 10),
+        netCashAtOpen: amount,
+        activityDate: actDateStr,
       });
+      acc.optionOpeningPremiumNet += amount;
       acc.optionOpenDebit += Math.max(0, -amount);
+      monthBucket.optionPremiumCollected += amount;
+      yearBucket.optionPremiumCollected += amount;
       continue;
     }
 
     if (OPTION_CLOSE_SHORT.has(code)) {
+      const contracts = qty != null ? Math.abs(qty) : 1;
       const result = closeContracts(
         acc.openOptionLegs,
         { type, strike, expiration, side: "short" },
@@ -534,6 +712,7 @@ export function aggregateActivities(activities: BrokerageActivity[]): PortfolioT
     }
 
     if (OPTION_CLOSE_LONG.has(code)) {
+      const contracts = qty != null ? Math.abs(qty) : 1;
       const result = closeContracts(
         acc.openOptionLegs,
         { type, strike, expiration, side: "long" },
@@ -548,18 +727,21 @@ export function aggregateActivities(activities: BrokerageActivity[]): PortfolioT
     }
 
     if (OPTION_EXPIRE.has(code) || OPTION_ASSIGN.has(code)) {
+      const cShort = contractsToCloseOnLeg(acc.openOptionLegs, "short", type, strike, expiration, qty);
       const result = closeContracts(
         acc.openOptionLegs,
         { type, strike, expiration, side: "short" },
-        contracts,
+        cShort,
         amount
       );
       acc.optionRealizedPnl += result.realized;
       acc.optionPremiumOpenCredit = Math.max(0, acc.optionPremiumOpenCredit - result.releasedOpenCredit);
+
+      const cLong = contractsToCloseOnLeg(acc.openOptionLegs, "long", type, strike, expiration, qty);
       const longResult = closeContracts(
         acc.openOptionLegs,
         { type, strike, expiration, side: "long" },
-        contracts,
+        cLong,
         amount
       );
       acc.optionRealizedPnl += longResult.realized;
@@ -575,53 +757,59 @@ export function aggregateActivities(activities: BrokerageActivity[]): PortfolioT
   let totalStockBasis = 0;
   let totalOpenOptionDebit = 0;
   let totalOpenOptionCredit = 0;
-  let totalRealizedPnl = 0;
-  let totalDividends = 0;
+  let totalRealizedStocksOptions = 0;
   let totalOptionRealizedPnl = 0;
   let totalStockRealizedPnl = 0;
   let totalOptionPremiumCollectedGross = 0;
 
   for (const acc of Array.from(accumulators.values())) {
-    const shares = roundShares(acc.shares);
-    const avgCost = shares > 0 ? acc.costBasis / shares : 0;
-    const currentBasis = shares * avgCost;
+    const shares = roundShares(lotShares(acc.lots));
+    const currentBasis = roundMoney(lotCostBasis(acc.lots));
+    const avgCost = shares > 0 ? currentBasis / shares : 0;
     const stockRealized = acc.stockRealizedPnl;
     const optionRealized = acc.optionRealizedPnl;
     const dividends = acc.dividends;
-    const realized = stockRealized + optionRealized + dividends;
-    const denomTotal = acc.totalBuyCostEver + acc.optionPremiumCollectedGross + acc.optionOpenDebit;
-    const denomOption = acc.optionPremiumCollectedGross + acc.optionOpenDebit;
+    const totalRealizedNoDiv = stockRealized + optionRealized;
+    const premNet = acc.optionOpeningPremiumNet;
+    const absPrem = Math.abs(premNet);
+    const investedDenom = acc.stockInvestedExclACATI + absPrem;
+    const openLegs = consolidateOpenOptionLegs(acc.openOptionLegs);
 
     symbols.push({
       symbol: acc.symbol,
       shares,
       avgCost,
       currentBasis,
+      stockInvestedExclACATI: acc.stockInvestedExclACATI,
       totalBuyCostEver: acc.totalBuyCostEver,
       stockRealizedPnl: stockRealized,
       dividends,
       optionPremiumCollectedGross: acc.optionPremiumCollectedGross,
+      optionOpeningPremiumNet: premNet,
       optionRealizedPnl: optionRealized,
       optionPremiumOpenCredit: acc.optionPremiumOpenCredit,
       optionOpenDebit: acc.optionOpenDebit,
-      optionsGainPct: denomOption > 0 ? (optionRealized / denomOption) * 100 : null,
-      totalRealizedPnl: realized,
-      totalGainPct: denomTotal > 0 ? (realized / denomTotal) * 100 : null,
+      optionsGainPct: absPrem > 1e-6 ? (optionRealized / absPrem) * 100 : null,
+      totalRealizedPnl: totalRealizedNoDiv,
+      totalGainPct: investedDenom > 1e-6 ? (totalRealizedNoDiv / investedDenom) * 100 : null,
       hasOpenStock: shares > 0,
-      hasOpenOptions: acc.openOptionLegs.length > 0,
-      openOptionLegs: acc.openOptionLegs,
+      hasOpenOptions: openLegs.length > 0,
+      hasACATIBasisUnknown: acc.hasACATI,
+      openOptionLegs: openLegs,
     });
 
     totalCurrentlyInvested += currentBasis + acc.optionOpenDebit;
     totalStockBasis += currentBasis;
     totalOpenOptionDebit += acc.optionOpenDebit;
     totalOpenOptionCredit += acc.optionPremiumOpenCredit;
-    totalRealizedPnl += realized;
-    totalDividends += dividends;
+    totalRealizedStocksOptions += totalRealizedNoDiv;
     totalOptionRealizedPnl += optionRealized;
     totalStockRealizedPnl += stockRealized;
     totalOptionPremiumCollectedGross += acc.optionPremiumCollectedGross;
   }
+
+  const totalDividends = portfolioDividendsNet;
+  const totalRealizedPnl = totalRealizedStocksOptions + portfolioDividendsNet;
 
   symbols.sort((a, b) => {
     const aActive = a.hasOpenStock || a.hasOpenOptions ? 1 : 0;
@@ -639,6 +827,8 @@ export function aggregateActivities(activities: BrokerageActivity[]): PortfolioT
   const byYear = Array.from(yearBuckets.values()).sort((a, b) =>
     a.period.localeCompare(b.period)
   );
+  applyCumulativeDeposited(byMonth);
+  applyCumulativeDeposited(byYear);
 
   return {
     symbols,
@@ -651,6 +841,9 @@ export function aggregateActivities(activities: BrokerageActivity[]): PortfolioT
     totalOptionRealizedPnl,
     totalStockRealizedPnl,
     totalOptionPremiumCollectedGross,
+    symbolsEverActive: symbolsEverActive.size,
+    totalMarginInterest,
+    totalCashInterest,
     rowCount: activities.length,
     lastActivityDate,
     cashFlow,
@@ -663,4 +856,18 @@ function roundShares(n: number): number {
   // Fractional shares can drift due to floating math; trim near-zero balances.
   if (Math.abs(n) < 1e-6) return 0;
   return Math.round(n * 1e8) / 1e8;
+}
+
+function roundMoney(n: number): number {
+  if (Math.abs(n) < 1e-6) return 0;
+  return Math.round(n * 100) / 100;
+}
+
+/** Running sum of ACH inflows (`bankDeposits`) for each bucket in order. */
+function applyCumulativeDeposited(buckets: PeriodBucket[]): void {
+  let cum = 0;
+  for (const b of buckets) {
+    cum += b.bankDeposits;
+    b.cumulativeDeposited = cum;
+  }
 }

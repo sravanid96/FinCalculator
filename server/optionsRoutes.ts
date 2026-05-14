@@ -631,9 +631,9 @@ router.get("/backtest/top20", async (req: Request, res: Response) => {
 
     const results = await backtestSymbols(symbols, cfg, years, 4);
     results.sort((a, b) => {
-      const edgeOrder = { strong: 0, positive: 1, flat: 2, negative: 3 };
-      const aE = edgeOrder[a.historicalEdge];
-      const bE = edgeOrder[b.historicalEdge];
+      const edgeOrder: Record<string, number> = { strong: 0, positive: 1, flat: 2, negative: 3 };
+      const aE = a?.historicalEdge != null ? (edgeOrder[a.historicalEdge] ?? 99) : 99;
+      const bE = b?.historicalEdge != null ? (edgeOrder[b.historicalEdge] ?? 99) : 99;
       if (aE !== bE) return aE - bE;
       if (b.sharpe !== a.sharpe) return b.sharpe - a.sharpe;
       return b.winRate - a.winRate;

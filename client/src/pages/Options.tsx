@@ -39,6 +39,7 @@ import { BacktestSummary } from "@/components/options/BacktestSummary";
 import { ScreenerTab } from "@/components/options/ScreenerTab";
 import { CompareTab } from "@/components/options/CompareTab";
 import { useToast } from "@/hooks/use-toast";
+import { fetchApi } from "@/lib/queryClient";
 import type { TickerAnalysis, TradeIdea } from "@shared/optionsSchema";
 
 export default function Options() {
@@ -66,9 +67,12 @@ export default function Options() {
     queryKey: ["/api/options/analysis", selectedTicker],
     queryFn: async () => {
       if (!selectedTicker) throw new Error("No ticker selected");
-      const res = await fetch(`/api/options/analysis/${selectedTicker}`);
-      if (!res.ok) throw new Error("Failed to fetch analysis");
-      return res.json();
+      const res = await fetchApi(`/api/options/analysis/${encodeURIComponent(selectedTicker)}`);
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text.trim() ? text.slice(0, 200) : `Analysis failed (${res.status})`);
+      }
+      return res.json() as Promise<TickerAnalysis>;
     },
     enabled: !!selectedTicker,
     staleTime: 60 * 1000,

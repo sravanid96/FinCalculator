@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { fetchApi } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -97,7 +98,7 @@ export function BacktestSummary({ symbol, currentStrategy }: BacktestSummaryProp
         tp: "50",
         freq: "5",
       });
-      const res = await fetch(`/api/options/backtest/${symbol}?${params.toString()}`);
+      const res = await fetchApi(`/api/options/backtest/${encodeURIComponent(symbol)}?${params.toString()}`);
       if (!res.ok) {
         const text = await res.text();
         throw new Error(text.slice(0, 200));

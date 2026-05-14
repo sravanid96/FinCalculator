@@ -25,6 +25,37 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
+/** Browser clients on another host (e.g. static CDN) calling this API with `VITE_API_BASE_URL`. */
+function parseCorsOrigins(): string[] {
+  const raw = (process.env.CORS_ORIGINS ?? process.env.CLIENT_ORIGIN ?? "").trim();
+  if (!raw) return [];
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+const corsAllowedOrigins = parseCorsOrigins();
+if (corsAllowedOrigins.length > 0) {
+  app.use((req, res, next) => {
+    const origin = typeof req.headers.origin === "string" ? req.headers.origin : undefined;
+    if (origin && corsAllowedOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader(
+        "Access-Control-Allow-Methods",
+        "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
+      );
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Authorization, Content-Type, X-Requested-With",
+      );
+      res.setHeader("Access-Control-Max-Age", "86400");
+    }
+    if (req.method === "OPTIONS") {
+      return res.status(204).end();
+    }
+    next();
+  });
+}
+
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",

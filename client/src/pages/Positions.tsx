@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   Briefcase,
   Coins,
+  Landmark,
   Loader2,
   Percent,
   PieChart as PieChartIcon,
@@ -73,10 +74,12 @@ interface SymbolSummary {
   shares: number;
   avgCost: number;
   currentBasis: number;
+  stockInvestedExclACATI: number;
   totalBuyCostEver: number;
   stockRealizedPnl: number;
   dividends: number;
   optionPremiumCollectedGross: number;
+  optionOpeningPremiumNet: number;
   optionRealizedPnl: number;
   optionPremiumOpenCredit: number;
   optionOpenDebit: number;
@@ -85,6 +88,7 @@ interface SymbolSummary {
   totalGainPct: number | null;
   hasOpenStock: boolean;
   hasOpenOptions: boolean;
+  hasACATIBasisUnknown: boolean;
   openOptionLegs: OpenOptionLeg[];
 }
 
@@ -98,8 +102,11 @@ interface PeriodBucket {
   optionRealizedPnl: number;
   dividends: number;
   cashDeposits: number;
+  bankDeposits: number;
   cashWithdrawals: number;
-  interest: number;
+  marginInterest: number;
+  cashInterest: number;
+  cumulativeDeposited: number;
   netCashFlow: number;
 }
 
@@ -114,6 +121,9 @@ interface PortfolioTotals {
   totalOptionRealizedPnl: number;
   totalStockRealizedPnl: number;
   totalOptionPremiumCollectedGross: number;
+  symbolsEverActive: number;
+  totalMarginInterest: number;
+  totalCashInterest: number;
   rowCount: number;
   lastActivityDate: string | null;
   cashFlow: number;
@@ -175,6 +185,7 @@ function SortableHead<K extends string>({
   onSort,
   align = "left",
   defaultDir = "desc",
+  title,
 }: {
   label: string;
   sortKey: K;
@@ -183,6 +194,7 @@ function SortableHead<K extends string>({
   onSort: (key: K, defaultDir?: SortDir) => void;
   align?: "left" | "right";
   defaultDir?: SortDir;
+  title?: string;
 }) {
   const active = sortKey === activeKey;
   const Icon = !active ? ArrowUpDown : direction === "asc" ? ArrowUp : ArrowDown;
@@ -190,6 +202,7 @@ function SortableHead<K extends string>({
     <TableHead className={align === "right" ? "text-right" : ""}>
       <button
         type="button"
+        title={title}
         onClick={() => onSort(sortKey, defaultDir)}
         className={`inline-flex items-center gap-1 select-none hover:text-foreground transition-colors ${
           active ? "text-foreground" : "text-muted-foreground"
@@ -228,11 +241,11 @@ function getSymbolSortValue(s: SymbolSummary, key: SymbolSortKey): string | numb
     case "shares":
       return s.shares;
     case "invested":
-      return s.currentBasis + s.optionOpenDebit;
+      return s.stockInvestedExclACATI + s.optionOpenDebit;
     case "stockRealizedPnl":
       return s.stockRealizedPnl;
     case "optionPremiumCollectedGross":
-      return s.optionPremiumCollectedGross;
+      return s.optionOpeningPremiumNet;
     case "optionRealizedPnl":
       return s.optionRealizedPnl;
     case "optionsGainPct":
@@ -535,7 +548,7 @@ export default function Positions() {
         </Card>
       ) : (
         <>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
             <Card>
               <CardHeader className="pb-2">
                 <CardDescription>Currently invested</CardDescription>
@@ -586,7 +599,30 @@ export default function Positions() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="text-xs text-muted-foreground">
-                Out of {portfolio!.symbols.length} symbols with any activity
+                Out of {portfolio!.symbolsEverActive ?? portfolio!.symbols.length} symbols with any
+                activity
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>Margin interest (cumulative)</CardDescription>
+                <CardTitle
+                  className={`flex items-center gap-2 text-2xl ${gainClass(
+                    portfolio!.totalMarginInterest ?? 0
+                  )}`}
+                >
+                  <Landmark className="h-5 w-5 text-muted-foreground" />
+                  {formatCurrency(portfolio!.totalMarginInterest ?? 0)}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-xs text-muted-foreground">
+                Sum of MINT rows from your CSVs
+                {(portfolio!.totalCashInterest ?? 0) !== 0 ? (
+                  <>
+                    {" "}
+                    · Cash sweep (INT) {formatCurrency(portfolio!.totalCashInterest ?? 0)}
+                  </>
+                ) : null}
               </CardContent>
             </Card>
           </div>
@@ -719,8 +755,10 @@ export default function Positions() {
               <div>
                 <CardTitle>Activity by Period</CardTitle>
                 <CardDescription>
-                  Realized P&amp;L, option premium, dividends, and net cash flow aggregated from
-                  CSV rows. Last activity:{" "}
+                  Realized P&amp;L, option premium, dividends, and net cash flow from CSV rows.
+                  Stock realized is FIFO gain/loss on sells; the sub-line is sales proceeds for that
+                  period. Cumulative deposits is running total of ACH transfers in. Last
+                  activity:{" "}
                   {portfolio!.lastActivityDate
                     ? new Date(portfolio!.lastActivityDate).toLocaleDateString()
                     : "--"}
@@ -752,9 +790,11 @@ export default function Positions() {
             <CardHeader>
               <CardTitle>Per-Stock Performance</CardTitle>
               <CardDescription>
-                Stock and option results grouped by symbol. Total gain % uses cumulative capital
-                deployed (stock cost + option premium collected + open option debit) as the
-                denominator.
+                Stock and option results grouped by symbol. The Invested column is dollars spent
+                on stock Buys (excluding ACATI), not bank deposits. For cumulative ACH deposits, use
+                Activity by Period → Cum. deposited. Option premium is net opening
+                cash (STO + BTO). Total realized is stock + options only; total gain % uses Invested
+                + absolute option premium per spec.
               </CardDescription>
             </CardHeader>
             <CardContent className="p-0">
@@ -841,6 +881,11 @@ export default function Positions() {
                       <TableCell className="font-medium">
                         <div className="flex items-center gap-2">
                           {row.symbol}
+                          {row.hasACATIBasisUnknown && (
+                            <Badge variant="outline" className="text-[10px]" title="ACATI shares: no cost basis in CSV">
+                              ACATI
+                            </Badge>
+                          )}
                           {row.hasOpenOptions && (
                             <Badge variant="secondary" className="text-[10px]">
                               {row.openOptionLegs.length} leg
@@ -853,13 +898,13 @@ export default function Positions() {
                         {row.shares > 0 ? row.shares.toFixed(4).replace(/\.?0+$/, "") : "--"}
                       </TableCell>
                       <TableCell className="text-right">
-                        {formatCurrency(row.currentBasis + row.optionOpenDebit)}
+                        {formatCurrency(row.stockInvestedExclACATI)}
                       </TableCell>
                       <TableCell className={`text-right font-medium ${gainClass(row.stockRealizedPnl)}`}>
                         {formatCurrency(row.stockRealizedPnl)}
                       </TableCell>
                       <TableCell className="text-right">
-                        {formatCurrency(row.optionPremiumCollectedGross)}
+                        {formatCurrency(row.optionOpeningPremiumNet)}
                       </TableCell>
                       <TableCell className={`text-right font-medium ${gainClass(row.optionRealizedPnl)}`}>
                         {formatCurrency(row.optionRealizedPnl)}
@@ -1022,6 +1067,18 @@ export default function Positions() {
   );
 }
 
+function normalizePeriodChartData(buckets: PeriodBucket[]): PeriodBucket[] {
+  return buckets.map((b) => ({
+    ...b,
+    marginInterest: b.marginInterest ?? 0,
+    cashInterest: b.cashInterest ?? 0,
+    stockRealizedPnl: b.stockRealizedPnl ?? 0,
+    optionRealizedPnl: b.optionRealizedPnl ?? 0,
+    dividends: b.dividends ?? 0,
+    optionPremiumCollected: b.optionPremiumCollected ?? 0,
+  }));
+}
+
 function PeriodChart({ buckets }: { buckets: PeriodBucket[] }) {
   if (buckets.length === 0) {
     return (
@@ -1030,9 +1087,10 @@ function PeriodChart({ buckets }: { buckets: PeriodBucket[] }) {
       </div>
     );
   }
+  const chartData = normalizePeriodChartData(buckets);
   return (
     <ResponsiveContainer width="100%" height={280}>
-      <BarChart data={buckets}>
+      <BarChart data={chartData}>
         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
         <XAxis dataKey="label" tick={{ fontSize: 12 }} />
         <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `$${Math.round(v / 1000)}k`} />
@@ -1052,6 +1110,7 @@ function PeriodChart({ buckets }: { buckets: PeriodBucket[] }) {
         <Bar dataKey="optionRealizedPnl" stackId="realized" fill="#6366f1" name="Option realized" />
         <Bar dataKey="dividends" stackId="realized" fill="#f59e0b" name="Dividends" />
         <Bar dataKey="optionPremiumCollected" fill="#06b6d4" name="Premium collected" />
+        <Bar dataKey="marginInterest" fill="#be123c" name="Margin interest" />
       </BarChart>
     </ResponsiveContainer>
   );
@@ -1064,7 +1123,10 @@ type PeriodSortKey =
   | "optionRealizedPnl"
   | "dividends"
   | "stockBuyAmount"
+  | "cumulativeDeposited"
   | "stockSellProceeds"
+  | "marginInterest"
+  | "cashInterest"
   | "netCashFlow";
 
 function PeriodTable({ buckets }: { buckets: PeriodBucket[] }) {
@@ -1099,6 +1161,7 @@ function PeriodTable({ buckets }: { buckets: PeriodBucket[] }) {
             direction={direction}
             onSort={toggle}
             align="right"
+            title="FIFO gain/loss on stock sells; sub-line is proceeds from sales this period."
           />
           <SortableHead
             label="Option premium"
@@ -1133,8 +1196,33 @@ function PeriodTable({ buckets }: { buckets: PeriodBucket[] }) {
             align="right"
           />
           <SortableHead
+            label="Cum. deposited"
+            sortKey="cumulativeDeposited"
+            activeKey={sortKey}
+            direction={direction}
+            onSort={toggle}
+            align="right"
+            title="Running total of ACH deposits (positive amounts) through this period."
+          />
+          <SortableHead
             label="Stock sold"
             sortKey="stockSellProceeds"
+            activeKey={sortKey}
+            direction={direction}
+            onSort={toggle}
+            align="right"
+          />
+          <SortableHead
+            label="Margin int."
+            sortKey="marginInterest"
+            activeKey={sortKey}
+            direction={direction}
+            onSort={toggle}
+            align="right"
+          />
+          <SortableHead
+            label="Cash int."
+            sortKey="cashInterest"
             activeKey={sortKey}
             direction={direction}
             onSort={toggle}
@@ -1153,7 +1241,7 @@ function PeriodTable({ buckets }: { buckets: PeriodBucket[] }) {
       <TableBody>
         {sorted.length === 0 ? (
           <TableRow>
-            <TableCell colSpan={8} className="py-6 text-center text-muted-foreground">
+            <TableCell colSpan={11} className="py-6 text-center text-muted-foreground">
               No data.
             </TableCell>
           </TableRow>
@@ -1161,8 +1249,15 @@ function PeriodTable({ buckets }: { buckets: PeriodBucket[] }) {
           sorted.map((b) => (
             <TableRow key={b.period}>
               <TableCell className="font-medium">{b.label}</TableCell>
-              <TableCell className={`text-right font-medium ${gainClass(b.stockRealizedPnl)}`}>
-                {formatCurrency(b.stockRealizedPnl)}
+              <TableCell className="text-right">
+                <div
+                  className={`font-medium tabular-nums ${gainClass(b.stockRealizedPnl ?? 0)}`}
+                >
+                  {formatCurrency(b.stockRealizedPnl)}
+                </div>
+                <div className="text-xs text-muted-foreground tabular-nums">
+                  Sales {formatCurrency(b.stockSellProceeds)}
+                </div>
               </TableCell>
               <TableCell className="text-right">{formatCurrency(b.optionPremiumCollected)}</TableCell>
               <TableCell className={`text-right font-medium ${gainClass(b.optionRealizedPnl)}`}>
@@ -1170,7 +1265,16 @@ function PeriodTable({ buckets }: { buckets: PeriodBucket[] }) {
               </TableCell>
               <TableCell className="text-right">{formatCurrency(b.dividends)}</TableCell>
               <TableCell className="text-right">{formatCurrency(b.stockBuyAmount)}</TableCell>
+              <TableCell className="text-right tabular-nums text-muted-foreground">
+                {formatCurrency(b.cumulativeDeposited)}
+              </TableCell>
               <TableCell className="text-right">{formatCurrency(b.stockSellProceeds)}</TableCell>
+              <TableCell className={`text-right font-medium ${gainClass(b.marginInterest ?? 0)}`}>
+                {formatCurrency(b.marginInterest)}
+              </TableCell>
+              <TableCell className={`text-right font-medium ${gainClass(b.cashInterest ?? 0)}`}>
+                {formatCurrency(b.cashInterest)}
+              </TableCell>
               <TableCell className={`text-right font-medium ${gainClass(b.netCashFlow)}`}>
                 {formatCurrency(b.netCashFlow)}
               </TableCell>

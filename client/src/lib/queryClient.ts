@@ -30,11 +30,33 @@ export function resolveApiUrl(url: string): string {
   return url;
 }
 
+/**
+ * Same-origin: send cookies. Cross-origin (`VITE_API_BASE_URL`): default `omit` so CORS does not
+ * require `Access-Control-Allow-Credentials` (Bearer still sent when token exists).
+ */
+function defaultCredentials(): RequestCredentials {
+  if (typeof window === "undefined") return "same-origin";
+  return apiBaseOverride() ? "omit" : "include";
+}
+
 /** Resolve URL, bypass HTTP cache (avoids 304 + empty body on auth JSON), wrap network failures. */
 export async function fetchApi(input: string, init?: RequestInit): Promise<Response> {
   const resolved = resolveApiUrl(input);
+  const headers = new Headers(init?.headers as HeadersInit | undefined);
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("auth_token");
+    if (token && !headers.has("Authorization")) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+  }
+  const credentials = init?.credentials ?? defaultCredentials();
   try {
-    return await fetch(resolved, { ...init, cache: init?.cache ?? "no-store" });
+    return await fetch(resolved, {
+      ...init,
+      cache: init?.cache ?? "no-store",
+      credentials,
+      headers,
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(

@@ -98,7 +98,7 @@ export function TopTradeIdeasTab({
       );
       const contentType = res.headers.get("content-type") || "";
       if (!res.ok) throw new Error("Failed to fetch top ideas");
-      if (!contentType.includes("application/json")) {
+      if (!contentType.toLowerCase().includes("application/json")) {
         const text = await res.text();
         throw new Error(
           `API returned non-JSON (got "${contentType || "unknown"}"). ` +
@@ -106,15 +106,19 @@ export function TopTradeIdeasTab({
             `Response starts with: ${text.slice(0, 80)}`
         );
       }
-      return res.json();
+      const body = await res.json();
+      return Array.isArray(body) ? body : [];
     },
     staleTime: 60 * 1000,
     refetchInterval: 60 * 1000,
     retry: 1,
   });
 
+  // Defense in depth if cache ever holds a non-array.
+  const ideasList = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+
   // Fetch backtest data for the exact symbols shown in the ideas list
-  const symbols = useMemo(() => data?.map((d) => d.symbol.toUpperCase()) || [], [data]);
+  const symbols = useMemo(() => ideasList.map((d) => d.symbol.toUpperCase()), [ideasList]);
   const symbolsKey = useMemo(() => symbols.slice().sort().join(","), [symbols]);
 
   const { data: backtestData, isLoading: backtestLoading } = useQuery<BacktestSymbolResult[]>({
@@ -136,7 +140,7 @@ export function TopTradeIdeasTab({
         return [];
       }
       const json = await res.json();
-      return json.results || [];
+      return Array.isArray(json?.results) ? (json.results as BacktestSymbolResult[]) : [];
     },
     enabled: symbols.length > 0,
     staleTime: 24 * 60 * 60 * 1000, // Cache for 24 hours
@@ -154,10 +158,10 @@ export function TopTradeIdeasTab({
 
   // Sort/filter data based on backtest results
   const processedData = useMemo(() => {
-    if (!data) return [];
+    if (!ideasList.length) return [];
 
     // First, filter out only the explicitly bad ones if that toggle is on
-    let filtered = data.filter((row) => {
+    let filtered = ideasList.filter((row) => {
       const backtest = backtestMap.get(row.symbol.toUpperCase());
       // Only hide if we have data showing it's a historical loser
       if (hideNegativeEdge && backtest?.historicalEdge === "negative") return false;
@@ -170,9 +174,9 @@ export function TopTradeIdeasTab({
         const backtestA = backtestMap.get(a.symbol.toUpperCase());
         const backtestB = backtestMap.get(b.symbol.toUpperCase());
 
-        const edgeOrder = { strong: 0, positive: 1, flat: 2, negative: 3 };
-        const edgeA = backtestA ? edgeOrder[backtestA.historicalEdge] : 4; // No data = last
-        const edgeB = backtestB ? edgeOrder[backtestB.historicalEdge] : 4;
+        const edgeOrder: Record<string, number> = { strong: 0, positive: 1, flat: 2, negative: 3 };
+        const edgeA = backtestA?.historicalEdge != null ? (edgeOrder[backtestA.historicalEdge] ?? 4) : 4;
+        const edgeB = backtestB?.historicalEdge != null ? (edgeOrder[backtestB.historicalEdge] ?? 4) : 4;
 
         // If edges are equal, sort by tradeability score
         if (edgeA === edgeB) {
@@ -186,12 +190,12 @@ export function TopTradeIdeasTab({
     }
 
     return filtered;
-  }, [data, backtestMap, filterByEdge, hideNegativeEdge]);
+  }, [ideasList, backtestMap, filterByEdge, hideNegativeEdge]);
 
   const updatedAt = useMemo(() => {
-    const ts = data?.[0]?.updatedAt;
+    const ts = ideasList[0]?.updatedAt;
     return ts ? new Date(ts) : null;
-  }, [data]);
+  }, [ideasList]);
 
   return (
     <div className="space-y-4">
@@ -260,9 +264,9 @@ export function TopTradeIdeasTab({
                   {backtestData.length} with backtest
                 </Badge>
               )}
-              {hideNegativeEdge && processedData.length < (data?.length || 0) && (
+              {hideNegativeEdge && processedData.length < ideasList.length && (
                 <Badge variant="secondary">
-                  {processedData.length} of {data?.length}
+                  {processedData.length} of {ideasList.length}
                 </Badge>
               )}
             </div>

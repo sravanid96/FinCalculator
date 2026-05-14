@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { Search, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { fetchApi } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 
 interface SearchResult {
@@ -31,10 +32,10 @@ export function TickerSearch({ onSelect }: TickerSearchProps) {
 
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/options/search?q=${encodeURIComponent(searchQuery)}`);
+      const res = await fetchApi(`/api/options/search?q=${encodeURIComponent(searchQuery)}`);
       if (res.ok) {
         const data = await res.json();
-        setResults(data);
+        setResults(Array.isArray(data) ? data : []);
       }
     } catch (error) {
       console.error("Search failed:", error);
