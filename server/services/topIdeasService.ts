@@ -16,7 +16,13 @@ export interface FetchTopIdeasOptions {
   minPop?: number;
   minLiq?: number;
   allowEarnings?: boolean;
+  bypassCache?: boolean;
 }
+
+// Cache the final top ideas result to avoid hammering Yahoo on page refreshes
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const TOP_IDEAS_CACHE_TTL = IS_PRODUCTION ? 10 * 60 * 1000 : 2 * 60 * 1000; // 10 min prod, 2 min dev
+let topIdeasCache: { data: TopOptionTradeIdea[]; timestamp: number; key: string } | null = null;
 
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
@@ -184,10 +190,23 @@ export async function fetchTopTradeIdeas(
   const minLiq = Math.max(0, Math.min(opts.minLiq ?? 15, 100));
   const allowEarnings = opts.allowEarnings ?? true;
 
+  // Check result cache first (avoids hammering Yahoo on page refreshes)
+  const cacheKey = `${limit}:${universeSize}:${minPop}:${minLiq}:${allowEarnings}`;
+  if (
+    !opts.bypassCache &&
+    topIdeasCache &&
+    topIdeasCache.key === cacheKey &&
+    Date.now() - topIdeasCache.timestamp < TOP_IDEAS_CACHE_TTL
+  ) {
+    return topIdeasCache.data;
+  }
+
   const mostActive = await getMostActiveTickers(universeSize);
   if (!mostActive.length) return [];
 
-  const rows = await asyncPool(10, mostActive, async (t) => {
+  // Lower concurrency in production to avoid Yahoo rate limits (4 instead of 10)
+  const concurrency = IS_PRODUCTION ? 4 : 8;
+  const rows = await asyncPool(concurrency, mostActive, async (t) => {
     const symbol = t.symbol.toUpperCase();
 
     try {
@@ -263,6 +282,9 @@ export async function fetchTopTradeIdeas(
       row.score = Math.max(0, Math.min(100, row.score + Math.round(boost / 2)));
     }),
   );
+
+  // Cache the result
+  topIdeasCache = { data: top, timestamp: Date.now(), key: cacheKey };
 
   return top;
 }

@@ -20,9 +20,32 @@ type YFScreener = any;
 
 // Cache for API responses
 const cache = new Map<string, { data: any; timestamp: number }>();
-const CACHE_TTL = 60 * 1000; // 1 minute cache for real-time data
-const HISTORICAL_CACHE_TTL = 5 * 60 * 1000; // 5 minutes for historical
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+// Longer TTLs in production to reduce Yahoo rate-limit issues
+const CACHE_TTL = IS_PRODUCTION ? 3 * 60 * 1000 : 60 * 1000; // 3 min prod, 1 min dev
+const HISTORICAL_CACHE_TTL = IS_PRODUCTION ? 15 * 60 * 1000 : 5 * 60 * 1000; // 15 min prod, 5 min dev
 const TNX_CACHE_TTL = 5 * 60 * 1000; // 5 minutes — macro moves slower than quotes
+
+// Retry helper with exponential backoff
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  retries: number = 2,
+  baseDelayMs: number = 500
+): Promise<T> {
+  let lastError: Error | null = null;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastError = e as Error;
+      if (i < retries) {
+        const delay = baseDelayMs * Math.pow(2, i) + Math.random() * 200;
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastError;
+}
 
 /** When Yahoo screener/search fails (common from datacenter IPs), top-ideas still has a universe. */
 const FALLBACK_MOST_ACTIVES: { symbol: string; name: string }[] = [
@@ -56,6 +79,26 @@ const FALLBACK_MOST_ACTIVES: { symbol: string; name: string }[] = [
   { symbol: "CSCO", name: "Cisco" },
   { symbol: "QCOM", name: "Qualcomm" },
   { symbol: "SPY", name: "SPDR S&P 500 ETF" },
+  { symbol: "QQQ", name: "Invesco QQQ Trust" },
+  { symbol: "IWM", name: "iShares Russell 2000" },
+  { symbol: "GS", name: "Goldman Sachs" },
+  { symbol: "MS", name: "Morgan Stanley" },
+  { symbol: "WMT", name: "Walmart" },
+  { symbol: "JNJ", name: "Johnson & Johnson" },
+  { symbol: "CVX", name: "Chevron" },
+  { symbol: "ORCL", name: "Oracle" },
+  { symbol: "ADBE", name: "Adobe" },
+  { symbol: "NOW", name: "ServiceNow" },
+  { symbol: "IBM", name: "IBM" },
+  { symbol: "TXN", name: "Texas Instruments" },
+  { symbol: "MU", name: "Micron Technology" },
+  { symbol: "AMAT", name: "Applied Materials" },
+  { symbol: "LRCX", name: "Lam Research" },
+  { symbol: "KLAC", name: "KLA Corporation" },
+  { symbol: "MRVL", name: "Marvell Technology" },
+  { symbol: "PANW", name: "Palo Alto Networks" },
+  { symbol: "SNOW", name: "Snowflake" },
+  { symbol: "PLTR", name: "Palantir Technologies" },
 ];
 
 function tickerLikeFallback(query: string): { symbol: string; name: string }[] {
@@ -148,7 +191,7 @@ export async function getStockQuote(symbol: string): Promise<StockQuote> {
   if (cached) return cached;
 
   try {
-    const quote: YFQuote = await yahooFinance.quote(symbol);
+    const quote: YFQuote = await withRetry(() => yahooFinance.quote(symbol));
 
     const result: StockQuote = {
       symbol: quote.symbol,
@@ -363,7 +406,7 @@ export async function getOptionsChainTargeted(
   if (cached) return cached;
 
   try {
-    const optionsSummary: any = await yahooFinance.options(symbol);
+    const optionsSummary: any = await withRetry(() => yahooFinance.options(symbol));
     const quote = await getStockQuote(symbol);
     const underlyingPrice = quote.price;
 
@@ -544,7 +587,11 @@ export async function getMostActiveTickers(
   if (cached) return cached;
 
   try {
-    const result: YFScreener = await (yahooFinance as any).screener("most_actives", { count: limit });
+    const result: YFScreener = await withRetry(
+      () => (yahooFinance as any).screener("most_actives", { count: limit }),
+      2,
+      1000 // longer delay for screener
+    );
     const quotes =
       result?.quotes
         ?.filter((q: any) => q?.quoteType === "EQUITY" && q?.symbol)
@@ -562,7 +609,7 @@ export async function getMostActiveTickers(
       return quotes;
     }
   } catch (error) {
-    console.error("Error fetching most active tickers:", error);
+    console.warn("Screener failed, using fallback tickers:", (error as Error).message);
   }
 
   const fallback = FALLBACK_MOST_ACTIVES.slice(0, Math.min(limit, FALLBACK_MOST_ACTIVES.length));
