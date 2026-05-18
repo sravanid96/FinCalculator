@@ -5,6 +5,8 @@ import {
   categories,
   transactionSplits,
   userPreferences,
+  emailSubscriptions,
+  digestTradeIdeas,
   csvMappings,
   tradeJournal,
   brokerageActivities,
@@ -20,6 +22,10 @@ import {
   type InsertTransactionSplit,
   type UserPreferences,
   type InsertUserPreferences,
+  type EmailSubscription,
+  type InsertEmailSubscription,
+  type DigestTradeIdea,
+  type InsertDigestTradeIdea,
   type CsvMapping,
   type InsertCsvMapping,
   type TradeJournalEntry,
@@ -80,6 +86,42 @@ export interface IStorage {
   // User preferences operations
   getPreferences(userId: string): Promise<UserPreferences | undefined>;
   upsertPreferences(userId: string, prefs: Partial<InsertUserPreferences>): Promise<UserPreferences>;
+  getWeeklyDigestSubscribers(): Promise<Array<{ email: string; firstName: string | null }>>;
+
+  // Public email subscriptions (no account required)
+  createEmailSubscription(email: string, digestType: string): Promise<EmailSubscription>;
+  getEmailSubscriptionByEmail(email: string): Promise<EmailSubscription | undefined>;
+  getEmailSubscriptionByUnsubscribeToken(token: string): Promise<EmailSubscription | undefined>;
+  verifyEmailSubscription(token: string): Promise<EmailSubscription | undefined>;
+  unsubscribeEmail(token: string): Promise<void>;
+  getActiveEmailSubscriptions(digestType: string): Promise<EmailSubscription[]>;
+
+  // Digest trade ideas tracking
+  saveDigestTradeIdea(idea: InsertDigestTradeIdea): Promise<DigestTradeIdea>;
+  saveDigestTradeIdeas(ideas: InsertDigestTradeIdea[]): Promise<DigestTradeIdea[]>;
+  getOpenDigestTradeIdeas(): Promise<DigestTradeIdea[]>;
+  updateDigestTradeIdeaOutcome(
+    id: string,
+    outcome: {
+      status: string;
+      exitDate: Date;
+      exitReason: string;
+      underlyingPriceAtExit: number;
+      actualPnl: number;
+      actualPnlPct: number;
+      daysHeld: number;
+    }
+  ): Promise<DigestTradeIdea | undefined>;
+  getDigestTradeIdeaStats(): Promise<{
+    totalTrades: number;
+    wins: number;
+    losses: number;
+    winRate: number;
+    totalPnl: number;
+    avgPnl: number;
+    avgDaysHeld: number;
+    byStrategy: Record<string, { wins: number; losses: number; winRate: number; totalPnl: number }>;
+  }>;
 
   // Analytics
   getAnalytics(
@@ -354,6 +396,223 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return result;
+  }
+
+  async getWeeklyDigestSubscribers(): Promise<
+    Array<{ email: string; firstName: string | null }>
+  > {
+    const rows = await db
+      .select({
+        email: users.email,
+        firstName: users.firstName,
+      })
+      .from(userPreferences)
+      .innerJoin(users, eq(users.id, userPreferences.userId))
+      .where(eq(userPreferences.weeklyMarketDigestEmail, true));
+
+    return rows
+      .filter((r): r is { email: string; firstName: string | null } => !!r.email)
+      .map((r) => ({
+        email: r.email!,
+        firstName: r.firstName,
+      }));
+  }
+
+  // Public email subscriptions
+  async createEmailSubscription(
+    email: string,
+    digestType: string
+  ): Promise<EmailSubscription> {
+    const unsubscribeToken = crypto.randomUUID();
+    const verifyToken = crypto.randomUUID();
+
+    const [result] = await db
+      .insert(emailSubscriptions)
+      .values({
+        email: email.toLowerCase().trim(),
+        digestType,
+        unsubscribeToken,
+        verifyToken,
+        isVerified: true, // Auto-verify for now (no email confirmation flow)
+      })
+      .onConflictDoUpdate({
+        target: emailSubscriptions.email,
+        set: {
+          unsubscribedAt: null, // Re-subscribe if they unsubscribed before
+          isVerified: true,
+        },
+      })
+      .returning();
+    return result;
+  }
+
+  async getEmailSubscriptionByEmail(
+    email: string
+  ): Promise<EmailSubscription | undefined> {
+    const [row] = await db
+      .select()
+      .from(emailSubscriptions)
+      .where(eq(emailSubscriptions.email, email.toLowerCase().trim()));
+    return row;
+  }
+
+  async getEmailSubscriptionByUnsubscribeToken(
+    token: string
+  ): Promise<EmailSubscription | undefined> {
+    const [row] = await db
+      .select()
+      .from(emailSubscriptions)
+      .where(eq(emailSubscriptions.unsubscribeToken, token));
+    return row;
+  }
+
+  async verifyEmailSubscription(
+    token: string
+  ): Promise<EmailSubscription | undefined> {
+    const [result] = await db
+      .update(emailSubscriptions)
+      .set({ isVerified: true, verifyToken: null })
+      .where(eq(emailSubscriptions.verifyToken, token))
+      .returning();
+    return result;
+  }
+
+  async unsubscribeEmail(token: string): Promise<void> {
+    await db
+      .update(emailSubscriptions)
+      .set({ unsubscribedAt: new Date() })
+      .where(eq(emailSubscriptions.unsubscribeToken, token));
+  }
+
+  async getActiveEmailSubscriptions(
+    digestType: string
+  ): Promise<EmailSubscription[]> {
+    return db
+      .select()
+      .from(emailSubscriptions)
+      .where(
+        and(
+          eq(emailSubscriptions.digestType, digestType),
+          eq(emailSubscriptions.isVerified, true),
+          sql`${emailSubscriptions.unsubscribedAt} IS NULL`
+        )
+      );
+  }
+
+  // Digest trade ideas tracking
+  async saveDigestTradeIdea(idea: InsertDigestTradeIdea): Promise<DigestTradeIdea> {
+    const [result] = await db
+      .insert(digestTradeIdeas)
+      .values(idea)
+      .returning();
+    return result;
+  }
+
+  async saveDigestTradeIdeas(ideas: InsertDigestTradeIdea[]): Promise<DigestTradeIdea[]> {
+    if (ideas.length === 0) return [];
+    return db
+      .insert(digestTradeIdeas)
+      .values(ideas)
+      .returning();
+  }
+
+  async getOpenDigestTradeIdeas(): Promise<DigestTradeIdea[]> {
+    return db
+      .select()
+      .from(digestTradeIdeas)
+      .where(eq(digestTradeIdeas.status, "open"))
+      .orderBy(digestTradeIdeas.entryDate);
+  }
+
+  async updateDigestTradeIdeaOutcome(
+    id: string,
+    outcome: {
+      status: string;
+      exitDate: Date;
+      exitReason: string;
+      underlyingPriceAtExit: number;
+      actualPnl: number;
+      actualPnlPct: number;
+      daysHeld: number;
+    }
+  ): Promise<DigestTradeIdea | undefined> {
+    const [result] = await db
+      .update(digestTradeIdeas)
+      .set({
+        status: outcome.status,
+        exitDate: outcome.exitDate,
+        exitReason: outcome.exitReason,
+        underlyingPriceAtExit: String(outcome.underlyingPriceAtExit),
+        actualPnl: String(outcome.actualPnl),
+        actualPnlPct: String(outcome.actualPnlPct),
+        daysHeld: outcome.daysHeld,
+        updatedAt: new Date(),
+      })
+      .where(eq(digestTradeIdeas.id, id))
+      .returning();
+    return result;
+  }
+
+  async getDigestTradeIdeaStats(): Promise<{
+    totalTrades: number;
+    wins: number;
+    losses: number;
+    winRate: number;
+    totalPnl: number;
+    avgPnl: number;
+    avgDaysHeld: number;
+    byStrategy: Record<string, { wins: number; losses: number; winRate: number; totalPnl: number }>;
+  }> {
+    const closedTrades = await db
+      .select()
+      .from(digestTradeIdeas)
+      .where(sql`${digestTradeIdeas.status} != 'open'`);
+
+    const totalTrades = closedTrades.length;
+    const wins = closedTrades.filter((t) => t.status === "won").length;
+    const losses = closedTrades.filter((t) => t.status === "lost").length;
+    const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
+    const totalPnl = closedTrades.reduce(
+      (sum, t) => sum + (parseFloat(t.actualPnl || "0") || 0),
+      0
+    );
+    const avgPnl = totalTrades > 0 ? totalPnl / totalTrades : 0;
+    const avgDaysHeld =
+      totalTrades > 0
+        ? closedTrades.reduce((sum, t) => sum + (t.daysHeld || 0), 0) / totalTrades
+        : 0;
+
+    const byStrategy: Record<
+      string,
+      { wins: number; losses: number; winRate: number; totalPnl: number }
+    > = {};
+
+    for (const trade of closedTrades) {
+      const strat = trade.strategy;
+      if (!byStrategy[strat]) {
+        byStrategy[strat] = { wins: 0, losses: 0, winRate: 0, totalPnl: 0 };
+      }
+      if (trade.status === "won") byStrategy[strat].wins += 1;
+      if (trade.status === "lost") byStrategy[strat].losses += 1;
+      byStrategy[strat].totalPnl += parseFloat(trade.actualPnl || "0") || 0;
+    }
+
+    for (const strat of Object.keys(byStrategy)) {
+      const s = byStrategy[strat];
+      const total = s.wins + s.losses;
+      s.winRate = total > 0 ? (s.wins / total) * 100 : 0;
+    }
+
+    return {
+      totalTrades,
+      wins,
+      losses,
+      winRate: Math.round(winRate * 10) / 10,
+      totalPnl: Math.round(totalPnl * 100) / 100,
+      avgPnl: Math.round(avgPnl * 100) / 100,
+      avgDaysHeld: Math.round(avgDaysHeld * 10) / 10,
+      byStrategy,
+    };
   }
 
   // Analytics

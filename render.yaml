@@ -21,4 +21,30 @@ services:
       #   Do NOT set GOOGLE_CALLBACK_URL to localhost on Render. In Google Cloud, add each redirect URI you use, e.g.
       #   https://YOUR-SERVICE.onrender.com/api/auth/google/callback (and custom domain if applicable).
       # - PLAID_CLIENT_ID / PLAID_SECRET / PLAID_ENV (optional)
+      # - CRON_SECRET (required for weekly digest cron)
+      # - RESEND_API_KEY, DIGEST_FROM_EMAIL (e.g. "FinCal <digest@yourdomain.com>")
+      # - APP_BASE_URL (public app URL for email links)
+      # - DIGEST_NOTIFY_EMAILS (optional comma-separated extra recipients)
+
+  - type: cron
+    name: fincal-weekly-digest
+    # Sunday 11:30 PM EDT = Monday 3:30 AM UTC
+    schedule: "30 3 * * 1"
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: >-
+      curl -sf -X POST
+      -H "Authorization: Bearer ${CRON_SECRET}"
+      "${APP_BASE_URL}/api/internal/cron/weekly-market-digest"
+
+  - type: cron
+    name: fincal-monitor-trades
+    # Daily at 4:30 PM EDT (after market close) = 20:30 UTC
+    schedule: "30 20 * * 1-5"
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: >-
+      curl -sf -X POST
+      -H "Authorization: Bearer ${CRON_SECRET}"
+      "${APP_BASE_URL}/api/internal/cron/monitor-digest-trades"
 

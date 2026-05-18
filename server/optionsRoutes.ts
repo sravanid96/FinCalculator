@@ -12,6 +12,7 @@ import { calculateSupportResistance } from "./services/supportResistance";
 import { getUpcomingEarnings } from "./services/earningsService";
 import { generateTradeIdeas, generateStrategyComparison } from "./services/tradeIdeaGenerator";
 import { generateFrameworkAnalysis, calculateRSI } from "./services/frameworkAnalysis";
+import { fetchTopTradeIdeas } from "./services/topIdeasService";
 import {
   backtestSymbols,
   backtestSymbol,
@@ -175,126 +176,29 @@ router.get("/top-ideas", async (req: Request, res: Response) => {
     const limit = Math.min(Number.parseInt((req.query.limit as string) || "20", 10) || 20, 50);
     const universeSize = Math.min(
       Number.parseInt((req.query.universe as string) || "120", 10) || 120,
-      120
+      120,
     );
     const minPop = Math.max(
       40,
-      Math.min(Number.parseInt((req.query.minPop as string) || "55", 10) || 55, 85)
+      Math.min(Number.parseInt((req.query.minPop as string) || "55", 10) || 55, 85),
     );
     const minLiq = Math.max(
       0,
-      Math.min(Number.parseInt((req.query.minLiq as string) || "15", 10) || 15, 100)
+      Math.min(Number.parseInt((req.query.minLiq as string) || "15", 10) || 15, 100),
     );
     const allowEarnings = (req.query.allowEarnings as string) === "true";
 
-    const mostActive = await getMostActiveTickers(universeSize);
-    if (!mostActive.length) return res.json([]);
-
-    const stats = {
-      universe: mostActive.length,
-      withOptions: 0,
-      withIdeas: 0,
-      filteredPop: 0,
-      filteredEarnings: 0,
-      filteredLiquidity: 0,
-      errors: 0,
-    };
-
-    const rows = await asyncPool(10, mostActive, async (t) => {
-      const symbol = t.symbol.toUpperCase();
-
-      try {
-        const quote = await getStockQuote(symbol);
-        const [chain, earnings] = await Promise.all([
-          getOptionsChainTargeted(symbol, DEFAULT_TRADE_CONFIG.targetDTE, 1),
-          getUpcomingEarnings(symbol),
-        ]);
-
-        // Require options expirations to exist.
-        if (!chain.expirations?.length) return null;
-        stats.withOptions += 1;
-
-        // Generate ideas without RSI first (avoid 120x historical calls -> throttling)
-        const ideas = generateTradeIdeas(chain, earnings, DEFAULT_TRADE_CONFIG, null);
-        const best = pickBestCreditIdea(ideas);
-        if (!best) return null;
-        stats.withIdeas += 1;
-
-        // Filters (tunable). Earnings risk can be allowed but penalized.
-        if (best.probabilityOfProfit < minPop) {
-          stats.filteredPop += 1;
-          return null;
-        }
-        if (best.hasEarningsRisk && !allowEarnings) {
-          stats.filteredEarnings += 1;
-          return null;
-        }
-
-        const liquidityScore = computeIdeaLiquidityScore(chain, best);
-        if (liquidityScore < minLiq) {
-          stats.filteredLiquidity += 1;
-          return null;
-        }
-
-        const reasons: string[] = [
-          `POP ${best.probabilityOfProfit.toFixed(0)}%`,
-          `Liquidity ${liquidityScore}/100`,
-          `${best.daysToExpiration} DTE`,
-          `R:R ${best.riskRewardRatio.toFixed(2)}`,
-        ];
-
-        let score = computeOverallScore(best, liquidityScore);
-        if (best.hasEarningsRisk) {
-          score = Math.max(0, score - 20);
-          reasons.push("Earnings risk");
-        }
-
-        const row: TopOptionTradeIdea = {
-          symbol: quote.symbol,
-          name: quote.name,
-          price: quote.price,
-          changePercent: quote.changePercent,
-          volume: quote.volume,
-          updatedAt: new Date().toISOString(),
-          idea: best,
-          score,
-          liquidityScore,
-          reasons,
-        };
-        return row;
-      } catch {
-        stats.errors += 1;
-        return null;
-      }
+    const top = await fetchTopTradeIdeas({
+      limit,
+      universeSize,
+      minPop,
+      minLiq,
+      allowEarnings,
     });
 
-    const top = (rows.filter(Boolean) as TopOptionTradeIdea[])
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
-
     if ((req.query.debug as string) === "true") {
-      return res.json({ stats, items: top });
+      return res.json({ universe: universeSize, items: top });
     }
-
-    // Attach RSI only for the final returned list to avoid Yahoo throttling.
-    await Promise.all(
-      top.map(async (row) => {
-        const rsi = await getRSIWithFallback(row.symbol, 6, 12);
-        if (rsi === null) return;
-
-        (row.idea as any).rsiAnalysis = buildRSIAnalysisForTopIdeas(rsi, row.idea.strategy);
-
-        if ((row.idea as any).rsiAnalysis?.zone && (row.idea as any).rsiAnalysis.zone !== "neutral") {
-          const zoneLabel =
-            (row.idea as any).rsiAnalysis.zone === "overbought" ? "Overbought" : "Oversold";
-          row.reasons.push(`RSI ${(row.idea as any).rsiAnalysis.value.toFixed(0)} (${zoneLabel})`);
-        }
-
-        // Apply RSI confidence boost to overall score (small bump).
-        const boost = (row.idea as any).rsiAnalysis?.confidenceBoost ?? 0;
-        row.score = Math.max(0, Math.min(100, row.score + Math.round(boost / 2)));
-      })
-    );
 
     res.json(top);
   } catch (error) {

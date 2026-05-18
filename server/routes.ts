@@ -20,6 +20,7 @@ import optionsRoutes from "./optionsRoutes";
 import screenerRoutes from "./screenerRoutes";
 import optionsWatchlistRoutes from "./optionsWatchlistRoutes";
 import healthRoutes from "./healthRoutes";
+import cronRoutes from "./cronRoutes";
 // pdf-parse will be loaded dynamically
 
 const upload = multer({ 
@@ -86,6 +87,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.use("/api/options/watchlist", isAuthenticated, optionsWatchlistRoutes);
   app.use("/api/options", optionsRoutes);
   app.use("/api/screener", screenerRoutes);
+  app.use("/api/internal/cron", cronRoutes);
 
   // Register health routes (auth required, local DB only)
   app.use("/api/health", healthRoutes);
@@ -2825,6 +2827,64 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (error) {
       console.error("Error updating preferences:", error);
       res.status(500).json({ message: "Failed to update preferences" });
+    }
+  });
+
+  // Public email subscription routes (no auth required)
+  const subscribeSchema = z.object({
+    email: z.string().email("Invalid email address"),
+    digestType: z.string().default("weekly_market"),
+  });
+
+  app.post("/api/subscribe", async (req, res) => {
+    try {
+      const body = subscribeSchema.parse(req.body);
+      const subscription = await storage.createEmailSubscription(
+        body.email,
+        body.digestType
+      );
+      res.json({
+        success: true,
+        message: "Subscribed! You'll receive the weekly market digest.",
+        email: subscription.email,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          message: error.errors[0]?.message || "Invalid email",
+        });
+      }
+      console.error("Error subscribing:", error);
+      res.status(500).json({ message: "Failed to subscribe" });
+    }
+  });
+
+  app.get("/api/unsubscribe/:token", async (req, res) => {
+    try {
+      const { token } = req.params;
+      const subscription = await storage.getEmailSubscriptionByUnsubscribeToken(token);
+      
+      if (!subscription) {
+        return res.status(404).send(`
+          <html><body style="font-family: sans-serif; padding: 40px; text-align: center;">
+            <h2>Link not found</h2>
+            <p>This unsubscribe link is invalid or has expired.</p>
+          </body></html>
+        `);
+      }
+
+      await storage.unsubscribeEmail(token);
+      
+      res.send(`
+        <html><body style="font-family: sans-serif; padding: 40px; text-align: center;">
+          <h2>Unsubscribed</h2>
+          <p>You've been removed from the weekly market digest.</p>
+          <p style="color: #666;">Email: ${subscription.email}</p>
+        </body></html>
+      `);
+    } catch (error) {
+      console.error("Error unsubscribing:", error);
+      res.status(500).send("Failed to unsubscribe");
     }
   });
 

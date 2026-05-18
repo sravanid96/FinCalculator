@@ -529,7 +529,100 @@ export function TopTradeIdeasTab({
           )}
         </CardContent>
       </Card>
+
+      {/* Email subscription card */}
+      <DigestSubscribeCard />
     </div>
+  );
+}
+
+function DigestSubscribeCard() {
+  const { toast } = useToast();
+  const [email, setEmail] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSubscribed, setIsSubscribed] = useState(false);
+
+  const handleSubscribe = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim()) return;
+
+    setIsSubmitting(true);
+    try {
+      const res = await fetchApi("/api/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), digestType: "weekly_market" }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "Failed to subscribe" }));
+        throw new Error(err.message);
+      }
+
+      setIsSubscribed(true);
+      toast({ title: "Subscribed!", description: "You'll receive weekly market updates." });
+    } catch (err) {
+      toast({
+        title: "Could not subscribe",
+        description: (err as Error).message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (isSubscribed) {
+    return (
+      <Card className="border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/30">
+        <CardContent className="flex items-center gap-3 py-4">
+          <div className="rounded-full bg-green-100 p-2 dark:bg-green-900">
+            <Shield className="h-5 w-5 text-green-600 dark:text-green-400" />
+          </div>
+          <div>
+            <p className="font-medium text-green-800 dark:text-green-200">You're subscribed!</p>
+            <p className="text-sm text-green-600 dark:text-green-400">
+              Weekly digest will be sent to {email}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Activity className="h-4 w-4 text-primary" />
+          Weekly Market Digest
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="mb-4 text-sm text-muted-foreground">
+          Get high-conviction backtested ideas + market snapshot delivered to your inbox every Sunday.
+        </p>
+        <form onSubmit={handleSubscribe} className="flex gap-2">
+          <input
+            type="email"
+            placeholder="Enter your email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            required
+          />
+          <Button type="submit" disabled={isSubmitting || !email.trim()}>
+            {isSubmitting ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : null}
+            Subscribe
+          </Button>
+        </form>
+        <p className="mt-2 text-xs text-muted-foreground">
+          No spam. Unsubscribe anytime.
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 

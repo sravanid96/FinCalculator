@@ -253,6 +253,38 @@ export default function Settings() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
+              <Bell className="h-5 w-5" />
+              Email notifications
+            </CardTitle>
+            <CardDescription>
+              Weekly market snapshot and high-conviction options ideas
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <Label htmlFor="weekly-digest">Weekly market digest</Label>
+                <p className="text-sm text-muted-foreground">
+                  Every Sunday: index moves, backtested top credit ideas with strong
+                  historical edge, sent to {user?.email || "your email"}.
+                </p>
+              </div>
+              <Switch
+                id="weekly-digest"
+                checked={prefsData?.preferences?.weeklyMarketDigestEmail ?? false}
+                onCheckedChange={(checked) =>
+                  updatePrefsMutation.mutate({ weeklyMarketDigestEmail: checked })
+                }
+                disabled={updatePrefsMutation.isPending}
+                data-testid="switch-weekly-digest"
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
               <Key className="h-5 w-5" />
               Plaid Configuration
             </CardTitle>

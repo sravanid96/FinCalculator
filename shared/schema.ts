@@ -108,6 +108,61 @@ export const transactionSplits = pgTable("transaction_splits", {
   notes: text("notes"),
 });
 
+// Digest trade ideas tracking (performance monitoring)
+export const digestTradeIdeas = pgTable("digest_trade_ideas", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  digestDate: timestamp("digest_date").notNull(), // When the digest was sent
+  symbol: varchar("symbol").notNull(),
+  strategy: varchar("strategy").notNull(), // put_credit_spread, call_credit_spread, etc.
+  legsJson: jsonb("legs_json").notNull(), // Full leg details
+  entryDate: timestamp("entry_date").notNull(),
+  entryCredit: decimal("entry_credit", { precision: 10, scale: 4 }).notNull(), // Credit received
+  expirationDate: varchar("expiration_date").notNull(),
+  underlyingPriceAtEntry: decimal("underlying_price_at_entry", { precision: 12, scale: 2 }).notNull(),
+  shortStrike: decimal("short_strike", { precision: 12, scale: 2 }).notNull(),
+  longStrike: decimal("long_strike", { precision: 12, scale: 2 }),
+  maxProfit: decimal("max_profit", { precision: 10, scale: 2 }).notNull(),
+  maxLoss: decimal("max_loss", { precision: 10, scale: 2 }).notNull(),
+  profitTargetPrice: decimal("profit_target_price", { precision: 10, scale: 4 }), // 50% of credit
+  probabilityOfProfit: decimal("probability_of_profit", { precision: 5, scale: 2 }),
+  historicalEdge: varchar("historical_edge"), // strong, positive, flat, negative at time of pick
+  // Outcome tracking
+  status: varchar("status").notNull().default("open"), // open, won, lost, expired, closed_early
+  exitDate: timestamp("exit_date"),
+  exitReason: varchar("exit_reason"), // profit_target, stop_loss, expiration, dte_management
+  underlyingPriceAtExit: decimal("underlying_price_at_exit", { precision: 12, scale: 2 }),
+  actualPnl: decimal("actual_pnl", { precision: 10, scale: 2 }),
+  actualPnlPct: decimal("actual_pnl_pct", { precision: 6, scale: 2 }),
+  daysHeld: integer("days_held"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("idx_digest_ideas_status").on(table.status),
+  index("idx_digest_ideas_symbol").on(table.symbol),
+]);
+
+export type DigestTradeIdea = typeof digestTradeIdeas.$inferSelect;
+export type InsertDigestTradeIdea = typeof digestTradeIdeas.$inferInsert;
+
+// Public email subscriptions (no account required)
+export const emailSubscriptions = pgTable("email_subscriptions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  email: varchar("email").notNull().unique(),
+  digestType: varchar("digest_type").notNull().default("weekly_market"), // weekly_market, etc.
+  isVerified: boolean("is_verified").default(false),
+  verifyToken: varchar("verify_token"),
+  unsubscribeToken: varchar("unsubscribe_token").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  unsubscribedAt: timestamp("unsubscribed_at"),
+});
+
+export const insertEmailSubscriptionSchema = createInsertSchema(emailSubscriptions).omit({
+  id: true,
+  createdAt: true,
+});
+export type EmailSubscription = typeof emailSubscriptions.$inferSelect;
+export type InsertEmailSubscription = typeof emailSubscriptions.$inferInsert;
+
 // User preferences
 export const userPreferences = pgTable("user_preferences", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -115,6 +170,8 @@ export const userPreferences = pgTable("user_preferences", {
   theme: varchar("theme").default("system"),
   currency: varchar("currency").default("USD"),
   dateFormat: varchar("date_format").default("MM/DD/YYYY"),
+  /** Opt-in for weekly market + options ideas email digest */
+  weeklyMarketDigestEmail: boolean("weekly_market_digest_email").default(false),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
