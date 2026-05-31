@@ -138,6 +138,118 @@ export interface TradeIdea {
   recommendation: "strong_buy" | "buy" | "neutral" | "avoid";
   notes: string[];
   rsiAnalysis?: RSIAnalysis; // RSI-based confidence analysis
+  /** Snapshot at watchlist save — used for self-improving outcome analysis. */
+  watchlistContext?: WatchlistContextSnapshot;
+}
+
+/** Context captured when an idea is saved to the watchlist (for learning from settlements). */
+export interface WatchlistContextSnapshot {
+  capturedAt: string;
+  strategy: OptionStrategy;
+  recommendation: TradeIdea["recommendation"];
+  hasEarningsRisk: boolean;
+  earningsDate?: string;
+  probabilityOfProfit: number;
+  daysToExpiration: number;
+  pillarScores?: PillarScores;
+  technical?: Pick<TechnicalIndicators, "rsi" | "trend" | "ivRank">;
+  historicalEdge?: BacktestSymbolResult["historicalEdge"];
+  backtestWinRate?: number;
+  quotePe?: number;
+  sector?: string;
+  /** Fundamentals captured at save time (fractions unless noted) — revenue/profit growth + moat proxies. */
+  fundamentals?: {
+    revenueGrowthYoy?: number | null; // fraction, e.g. 0.15 = 15%
+    roic?: number | null; // fraction — moat / capital efficiency proxy
+    fcfMargin?: number | null; // fraction
+    netDebtToEbitda?: number | null; // ratio — leverage
+    epsQoqGrowth?: number | null; // fraction — profit growth
+    grossMarginDeltaPp?: number | null; // percentage points (latest - prior)
+    recommendationMean?: number | null; // 1=Strong Buy ... 5=Sell
+  };
+}
+
+/** One point in the running re-evaluation, recomputed as each trade settles. */
+export interface WatchlistEvaluationPoint {
+  atSettled: number; // cumulative settled win/loss trades at this point
+  date: string; // settle date (YYYY-MM-DD) of the trade producing this point
+  actualWinRatePct: number;
+  predictedWinRatePctLearned: number;
+  brierLearned: number;
+  brierBaseRate: number;
+  brierImprovementVsBaseRate: number; // >0 means learned beating base-rate so far
+}
+
+/** Out-of-sample (walk-forward) evaluation of whether the self-improving model
+ *  predicts win rate more accurately than naive baselines. */
+export interface WatchlistEvaluationReport {
+  /** Trades scored out-of-sample (time-ordered, predicted from prior trades only). */
+  evaluated: number;
+  /** Subset where the learned model actually moved the prediction (multiplier ≠ 1). */
+  adjustedCount: number;
+  minRequired: number;
+  ready: boolean;
+  breakevensExcluded: number;
+
+  actualWinRatePct: number;
+  predictedWinRatePctPop: number | null; // mean stated POP
+  predictedWinRatePctLearned: number; // mean learned probability
+
+  // Brier score: mean squared error of probability vs outcome. Lower = more accurate.
+  brierPop: number | null;
+  brierBaseRate: number;
+  brierLearned: number;
+  brierImprovementVsBaseRate: number; // baseRate - learned (positive = learned better)
+  brierImprovementVsPop: number | null;
+
+  // Discrimination: does the prediction rank winners above losers? 0.5 = coin flip.
+  aucPop: number | null;
+  aucLearned: number | null;
+
+  calibration: { bucket: string; predictedPct: number; actualPct: number; n: number }[];
+  /** Realized win rate of above-median vs below-median learned predictions. */
+  lift: { highWinRatePct: number | null; lowWinRatePct: number | null; n: number };
+
+  /** Running re-evaluation: one point per settlement, so the trend is visible over time. */
+  history: WatchlistEvaluationPoint[];
+
+  verdict: "improving" | "no_evidence" | "degrading" | "not_enough_data";
+  notes: string[];
+}
+
+/** Per-idea adjustment derived from a user's own settled outcomes. */
+export interface LearnedSignal {
+  /** Score multiplier in [0.82, 1.18]; 1 = no adjustment. */
+  multiplier: number;
+  deltaWinRatePct: number | null;
+  direction: "favor" | "caution" | "neutral";
+  matched: string[];
+  note: string;
+  suggestedRecommendation?: TradeIdea["recommendation"];
+}
+
+export type WatchlistLearningReadiness = "not_enough_data" | "learning" | "calibrated";
+
+export interface WatchlistLearningBucket {
+  key: string;
+  label: string;
+  sampleSize: number;
+  winRatePct: number;
+  avgPnl: number;
+  deltaWinRatePct: number;
+  /** Suggested score multiplier when this bucket matches (0.85–1.15). */
+  weightMultiplier: number;
+}
+
+export interface WatchlistLearningReport {
+  readiness: WatchlistLearningReadiness;
+  settledCount: number;
+  baselineWinRatePct: number;
+  baselineAvgPnl: number;
+  buckets: WatchlistLearningBucket[];
+  suggestions: string[];
+  /** Pillar-level pass rate vs outcomes (when framework scores were captured). */
+  pillarInsights: { pillar: string; highWinRatePct: number | null; lowWinRatePct: number | null; n: number }[];
 }
 
 // Individual leg of a trade

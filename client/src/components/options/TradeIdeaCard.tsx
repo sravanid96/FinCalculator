@@ -12,13 +12,14 @@ import {
   Activity,
   ArrowUp,
   ArrowDown,
+  Brain,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { TradeIdea } from "@shared/optionsSchema";
+import type { LearnedSignal, TradeIdea } from "@shared/optionsSchema";
 
 interface TradeIdeaCardProps {
   idea: TradeIdea;
@@ -26,6 +27,8 @@ interface TradeIdeaCardProps {
   onClick?: () => void;
   onAddToWatchlist?: () => void;
   watchlistBusy?: boolean;
+  /** Adjustment derived from the user's own settled outcomes (self-improving). */
+  learnedSignal?: LearnedSignal;
 }
 
 const recommendationConfig = {
@@ -57,9 +60,13 @@ export function TradeIdeaCard({
   onClick,
   onAddToWatchlist,
   watchlistBusy,
+  learnedSignal,
 }: TradeIdeaCardProps) {
   const rec = recommendationConfig[idea.recommendation];
   const RecIcon = rec.icon;
+  const showLearned =
+    learnedSignal &&
+    (learnedSignal.direction !== "neutral" || learnedSignal.matched.length > 0);
 
   return (
     <Card
@@ -194,6 +201,52 @@ export function TradeIdeaCard({
             <AlertTriangle className="h-4 w-4" />
             <span>Earnings on {idea.earningsDate} - elevated risk</span>
           </div>
+        )}
+
+        {/* Self-improving: adjustment from your own settled outcomes */}
+        {showLearned && learnedSignal && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div
+                  className={cn(
+                    "mt-3 flex items-start gap-2 rounded-md border px-2 py-1.5 text-xs cursor-help",
+                    learnedSignal.direction === "favor" &&
+                      "border-green-200 bg-green-500/10 text-green-700",
+                    learnedSignal.direction === "caution" &&
+                      "border-red-200 bg-red-500/10 text-red-700",
+                    learnedSignal.direction === "neutral" &&
+                      "border-blue-200 bg-blue-500/10 text-blue-700",
+                  )}
+                >
+                  <Brain className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <div className="space-y-0.5">
+                    <span className="font-medium">
+                      Your history:{" "}
+                      {learnedSignal.direction === "favor"
+                        ? "favored"
+                        : learnedSignal.direction === "caution"
+                          ? "caution"
+                          : "neutral"}
+                      {learnedSignal.deltaWinRatePct != null
+                        ? ` (${learnedSignal.deltaWinRatePct >= 0 ? "+" : ""}${learnedSignal.deltaWinRatePct}% win)`
+                        : ""}
+                    </span>
+                    {learnedSignal.suggestedRecommendation &&
+                      learnedSignal.suggestedRecommendation !== idea.recommendation && (
+                        <span className="block">
+                          Suggests:{" "}
+                          {recommendationConfig[learnedSignal.suggestedRecommendation].label}
+                        </span>
+                      )}
+                  </div>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-xs">
+                <p className="text-sm">{learnedSignal.note}</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         )}
 
         {/* Notes */}

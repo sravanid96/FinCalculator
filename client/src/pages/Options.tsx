@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Search,
@@ -40,7 +40,14 @@ import { ScreenerTab } from "@/components/options/ScreenerTab";
 import { CompareTab } from "@/components/options/CompareTab";
 import { useToast } from "@/hooks/use-toast";
 import { fetchApi } from "@/lib/queryClient";
-import type { TickerAnalysis, TradeIdea } from "@shared/optionsSchema";
+import type {
+  TickerAnalysis,
+  TradeIdea,
+  WatchlistContextSnapshot,
+  WatchlistLearningReport,
+} from "@shared/optionsSchema";
+import { buildWatchlistContext } from "@/lib/watchlistContext";
+import { learnedSignalForIdea, watchlistLearningMultiplier } from "@shared/watchlistLearning";
 
 export default function Options() {
   const { toast } = useToast();
@@ -52,8 +59,11 @@ export default function Options() {
   >("analysis");
 
   const addWatchMut = useMutation({
-    mutationFn: async (payload: { symbol: string; idea: TradeIdea }) =>
-      addIdeaToWatchlist(payload.symbol, payload.idea),
+    mutationFn: async (payload: {
+      symbol: string;
+      idea: TradeIdea;
+      context?: WatchlistContextSnapshot;
+    }) => addIdeaToWatchlist(payload.symbol, payload.idea, payload.context),
     onSuccess: () => {
       toast({ title: "Added to watchlist" });
       queryClient.invalidateQueries({ queryKey: ["/api/options/watchlist"] });
@@ -61,6 +71,17 @@ export default function Options() {
     onError: (e: Error) => {
       toast({ title: "Could not add", description: e.message, variant: "destructive" });
     },
+  });
+
+  const { data: learningReport } = useQuery<WatchlistLearningReport>({
+    queryKey: ["/api/options/watchlist/learning"],
+    queryFn: async () => {
+      const res = await fetchApi("/api/options/watchlist/learning");
+      if (!res.ok) throw new Error("Failed to load learning report");
+      return res.json() as Promise<WatchlistLearningReport>;
+    },
+    staleTime: 5 * 60 * 1000,
+    retry: 0,
   });
 
   const { data: analysis, isLoading, error } = useQuery<TickerAnalysis>({
@@ -78,6 +99,34 @@ export default function Options() {
     staleTime: 60 * 1000,
     retry: 1,
   });
+
+  // Re-rank analysis ideas using the user's own settled-outcome multiplier on top of
+  // the server's recommendation/RSI ordering. Surfaces historically-better setups first.
+  const rankedTradeIdeas = useMemo(() => {
+    const ideas = analysis?.tradeIdeas ?? [];
+    if (!analysis || !learningReport || learningReport.readiness === "not_enough_data") {
+      return ideas;
+    }
+    const recRank: Record<TradeIdea["recommendation"], number> = {
+      strong_buy: 85,
+      buy: 70,
+      neutral: 50,
+      avoid: 25,
+    };
+    const scoreOf = (idea: TradeIdea): number => {
+      const base =
+        recRank[idea.recommendation] +
+        (idea.probabilityOfProfit - 50) * 0.2 +
+        (idea.rsiAnalysis?.confidenceBoost ?? 0);
+      const ctx = buildWatchlistContext({
+        idea,
+        frameworkAnalysis: analysis.frameworkAnalysis,
+        quote: analysis.quote,
+      });
+      return base * watchlistLearningMultiplier(ctx, learningReport);
+    };
+    return [...ideas].sort((a, b) => scoreOf(b) - scoreOf(a));
+  }, [analysis, learningReport]);
 
   const handleTickerSelect = useCallback((ticker: string) => {
     setSelectedTicker(ticker);
@@ -288,8 +337,8 @@ export default function Options() {
                     <CardContent className="p-0">
                       <ScrollArea className="h-[320px]">
                         <div className="space-y-3 p-4 pt-0">
-                          {analysis.tradeIdeas.length > 0 ? (
-                            analysis.tradeIdeas.map((idea) => (
+                          {rankedTradeIdeas.length > 0 ? (
+                            rankedTradeIdeas.map((idea) => (
                               <TradeIdeaCard
                                 key={idea.id}
                                 idea={idea}
@@ -299,7 +348,25 @@ export default function Options() {
                                   addWatchMut.mutate({
                                     symbol: analysis.quote.symbol,
                                     idea,
+                                    context: buildWatchlistContext({
+                                      idea,
+                                      frameworkAnalysis: analysis.frameworkAnalysis,
+                                      quote: analysis.quote,
+                                    }),
                                   })
+                                }
+                                learnedSignal={
+                                  learningReport
+                                    ? learnedSignalForIdea(
+                                        buildWatchlistContext({
+                                          idea,
+                                          frameworkAnalysis: analysis.frameworkAnalysis,
+                                          quote: analysis.quote,
+                                        }),
+                                        learningReport,
+                                        idea.recommendation,
+                                      )
+                                    : undefined
                                 }
                                 watchlistBusy={addWatchMut.isPending}
                               />

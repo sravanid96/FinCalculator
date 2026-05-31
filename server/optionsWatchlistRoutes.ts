@@ -6,13 +6,47 @@ import { optionsWatchlist } from "@shared/schema";
 import { storage } from "./storage";
 import { calculatePLAtPrice } from "./services/optionsCalculator";
 import { getUnderlyingCloseOnOrBefore } from "./services/ideaWatchlistSettlement";
-import type { OptionStrategy, TradeIdea, TradeLeg } from "../shared/optionsSchema";
+import { computeWatchlistLearning } from "./services/ideaWatchlistLearning";
+import { evaluateWatchlistModel } from "./services/ideaWatchlistEvaluation";
+import { getFundamentals } from "./services/fundamentalsService";
+import type {
+  OptionStrategy,
+  TradeIdea,
+  TradeLeg,
+  WatchlistContextSnapshot,
+} from "../shared/optionsSchema";
 
 const router = Router();
 
 function getUserId(req: Request): string | null {
   const u = (req as any).user;
   return u?.claims?.sub || u?.id || null;
+}
+
+/** Best-effort fundamentals snapshot for learning. Returns null on any failure. */
+async function captureFundamentals(symbol: string): Promise<{
+  sector: string | null;
+  trailingPe: number | null;
+  fundamentals: NonNullable<WatchlistContextSnapshot["fundamentals"]>;
+} | null> {
+  try {
+    const f = await getFundamentals(symbol);
+    return {
+      sector: f.sector,
+      trailingPe: f.trailingPE,
+      fundamentals: {
+        revenueGrowthYoy: f.revenueGrowthYoy,
+        roic: f.roic,
+        fcfMargin: f.fcfMargin,
+        netDebtToEbitda: f.netDebtToEbitda,
+        epsQoqGrowth: f.earnings?.epsQoqGrowth ?? null,
+        grossMarginDeltaPp: f.earnings?.margins?.grossMarginDeltaPp ?? null,
+        recommendationMean: f.recommendationMean,
+      },
+    };
+  } catch {
+    return null;
+  }
 }
 
 function legsFromIdea(idea: TradeIdea): TradeLeg[] {
@@ -168,6 +202,32 @@ async function syncWatchlistRowToTradeJournal(
     .where(and(eq(optionsWatchlist.id, row.id), eq(optionsWatchlist.userId, userId)));
 }
 
+const watchlistContextSchema = z
+  .object({
+    capturedAt: z.string().optional(),
+    strategy: z.string().optional(),
+    recommendation: z.enum(["strong_buy", "buy", "neutral", "avoid"]).optional(),
+    hasEarningsRisk: z.boolean().optional(),
+    earningsDate: z.string().optional(),
+    probabilityOfProfit: z.number().optional(),
+    daysToExpiration: z.number().optional(),
+    pillarScores: z.any().optional(),
+    technical: z.any().optional(),
+    historicalEdge: z.enum(["strong", "positive", "flat", "negative"]).optional(),
+    backtestWinRate: z.number().optional(),
+    quotePe: z.number().optional(),
+    sector: z.string().optional(),
+    fundamentals: z
+      .object({
+        revenueGrowthYoy: z.number().nullable().optional(),
+        roic: z.number().nullable().optional(),
+        fcfMargin: z.number().nullable().optional(),
+        netDebtToEbitda: z.number().nullable().optional(),
+      })
+      .optional(),
+  })
+  .passthrough();
+
 const addBodySchema = z.object({
   symbol: z.string().trim().min(1).max(32),
   idea: z
@@ -181,6 +241,7 @@ const addBodySchema = z.object({
       underlyingPrice: z.coerce.number().finite().positive(),
     })
     .passthrough(),
+  context: watchlistContextSchema.optional(),
   entryUnderlyingPrice: z
     .preprocess((v) => (v === null ? undefined : v), z.coerce.number().finite().positive().optional()),
 });
@@ -192,6 +253,30 @@ const settleBodySchema = z.object({
 const patchWatchlistBodySchema = z.object({
   /** Net premium per share in the same convention as Trade ideas (e.g. credit received for credit spreads). */
   entryPrice: z.number().finite(),
+});
+
+router.get("/learning", async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+  const rows = await db
+    .select()
+    .from(optionsWatchlist)
+    .where(eq(optionsWatchlist.userId, userId));
+
+  res.json(computeWatchlistLearning(rows));
+});
+
+router.get("/evaluation", async (req: Request, res: Response) => {
+  const userId = getUserId(req);
+  if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+  const rows = await db
+    .select()
+    .from(optionsWatchlist)
+    .where(eq(optionsWatchlist.userId, userId));
+
+  res.json(evaluateWatchlistModel(rows));
 });
 
 router.get("/stats", async (req: Request, res: Response) => {
@@ -247,9 +332,30 @@ router.post("/", async (req: Request, res: Response) => {
     return res.status(400).json({ message: "Invalid body", issues: parsed.error.issues });
   }
 
-  const { symbol, idea, entryUnderlyingPrice } = parsed.data;
+  const { symbol, idea, entryUnderlyingPrice, context } = parsed.data;
   const ideaFull = idea as unknown as TradeIdea;
   const entry = entryUnderlyingPrice ?? ideaFull.underlyingPrice;
+
+  // Capture fundamentals at save time (moat/growth/leverage) so settlement learning can
+  // correlate outcomes with company quality. Best-effort: never block a save on this.
+  const savedFundamentals = await captureFundamentals(symbol.toUpperCase());
+
+  const ideaToStore: TradeIdea = { ...ideaFull };
+  ideaToStore.watchlistContext = {
+    ...(context ?? {}),
+    capturedAt: context?.capturedAt ?? new Date().toISOString(),
+    strategy: (context?.strategy as TradeIdea["strategy"]) ?? ideaFull.strategy,
+    recommendation: context?.recommendation ?? ideaFull.recommendation,
+    hasEarningsRisk: context?.hasEarningsRisk ?? ideaFull.hasEarningsRisk,
+    probabilityOfProfit: context?.probabilityOfProfit ?? ideaFull.probabilityOfProfit,
+    daysToExpiration: context?.daysToExpiration ?? ideaFull.daysToExpiration,
+    sector: context?.sector ?? savedFundamentals?.sector ?? undefined,
+    quotePe: context?.quotePe ?? savedFundamentals?.trailingPe ?? undefined,
+    fundamentals: {
+      ...(context?.fundamentals ?? {}),
+      ...(savedFundamentals?.fundamentals ?? {}),
+    },
+  } as WatchlistContextSnapshot;
 
   const [row] = await db
     .insert(optionsWatchlist)
@@ -257,7 +363,7 @@ router.post("/", async (req: Request, res: Response) => {
       userId,
       symbol: symbol.toUpperCase(),
       strategy: ideaFull.strategy,
-      ideaJson: ideaFull as unknown as Record<string, unknown>,
+      ideaJson: ideaToStore as unknown as Record<string, unknown>,
       entryUnderlyingPrice: String(entry),
       expirationDate: ideaFull.expirationDate,
     })

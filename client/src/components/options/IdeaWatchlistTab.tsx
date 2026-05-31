@@ -10,9 +10,14 @@ import {
   RefreshCw,
   Pencil,
 } from "lucide-react";
-import type { TradeIdea } from "@shared/optionsSchema";
+import type {
+  TradeIdea,
+  WatchlistContextSnapshot,
+  WatchlistLearningReport,
+  WatchlistEvaluationReport,
+} from "@shared/optionsSchema";
 import type { OptionsWatchlistRow } from "@shared/schema";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, fetchApi } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,18 +33,36 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Label } from "@/components/ui/label";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  ResponsiveContainer,
+  Legend,
+} from "recharts";
 
 /** Readable text/placeholder in dark table cells (default muted placeholder was too faint). */
 const watchlistInputClass =
   "h-8 bg-background text-right text-xs tabular-nums text-foreground caret-foreground placeholder:text-muted-foreground/80";
 
-export async function addIdeaToWatchlist(symbol: string, idea: TradeIdea) {
+export async function addIdeaToWatchlist(
+  symbol: string,
+  idea: TradeIdea,
+  context?: WatchlistContextSnapshot,
+) {
   if (!Number.isFinite(idea.underlyingPrice) || idea.underlyingPrice <= 0) {
     throw new Error(
       "This idea has an invalid underlying price. Refresh or re-run analysis, then add again.",
     );
   }
-  const res = await apiRequest("POST", "/api/options/watchlist", { symbol, idea });
+  const res = await apiRequest("POST", "/api/options/watchlist", {
+    symbol,
+    idea,
+    ...(context ? { context } : {}),
+  });
   return res.json() as Promise<{ item: OptionsWatchlistRow }>;
 }
 
@@ -170,19 +193,63 @@ export function IdeaWatchlistTab() {
     data: watchData,
     isLoading: watchLoading,
     error: watchError,
-  } = useQuery<{ stats: WatchlistStats; list: { items: OptionsWatchlistRow[] } }>({
+  } = useQuery<{
+    stats: WatchlistStats;
+    list: { items: OptionsWatchlistRow[] };
+    learning?: WatchlistLearningReport;
+    evaluation?: WatchlistEvaluationReport;
+  }>({
     queryKey: ["/api/options/watchlist", "bundle"],
     queryFn: async () => {
+      // Core data (required). If these fail the tab legitimately can't render.
       const [statsRes, listRes] = await Promise.all([
         apiRequest("GET", "/api/options/watchlist/stats"),
         apiRequest("GET", "/api/options/watchlist"),
       ]);
       const [stats, list] = await Promise.all([statsRes.json(), listRes.json()]);
-      return { stats, list };
+
+      // Secondary analytics (optional). Never let a 404/HTML/parse failure here — e.g. an
+      // older server instance without these routes — take down the whole watchlist.
+      const optionalJson = async <T,>(url: string): Promise<T | undefined> => {
+        try {
+          const res = await fetchApi(url);
+          if (!res.ok) return undefined;
+          const ct = res.headers.get("content-type") || "";
+          if (!ct.toLowerCase().includes("application/json")) return undefined;
+          return (await res.json()) as T;
+        } catch {
+          return undefined;
+        }
+      };
+      const [learning, evaluation] = await Promise.all([
+        optionalJson<WatchlistLearningReport>("/api/options/watchlist/learning"),
+        optionalJson<WatchlistEvaluationReport>("/api/options/watchlist/evaluation"),
+      ]);
+
+      return { stats, list, learning, evaluation };
     },
   });
   const stats = watchData?.stats;
   const listData = watchData?.list;
+  const learning = watchData?.learning;
+  const evaluation = watchData?.evaluation;
+
+  const verdictConfig: Record<
+    WatchlistEvaluationReport["verdict"],
+    { label: string; cls: string }
+  > = {
+    improving: { label: "Improving accuracy", cls: "border-green-300 bg-green-500/10 text-green-700" },
+    degrading: { label: "Hurting accuracy", cls: "border-red-300 bg-red-500/10 text-red-700" },
+    no_evidence: { label: "No evidence yet", cls: "border-yellow-300 bg-yellow-500/10 text-yellow-700" },
+    not_enough_data: { label: "Collecting data", cls: "border-muted bg-muted text-muted-foreground" },
+  };
+
+  const readinessLabel =
+    learning?.readiness === "calibrated"
+      ? "Calibrated"
+      : learning?.readiness === "learning"
+        ? "Learning"
+        : "Collecting data";
 
   const autoSettleMut = useMutation({
     mutationFn: async () => {
@@ -347,6 +414,250 @@ export function IdeaWatchlistTab() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-base">Self-improving insights</CardTitle>
+            <Badge variant="outline">{readinessLabel}</Badge>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Learns from your settled watchlist outcomes vs context captured at save time (framework
+            pillars, earnings, backtest edge, POP). Not financial advice — use to tighten your own
+            rules.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {watchLoading && <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />}
+          {!watchLoading && learning && (
+            <>
+              <p className="text-muted-foreground">
+                Baseline:{" "}
+                <span className="font-medium text-foreground">
+                  {learning.baselineWinRatePct}% win
+                </span>{" "}
+                · avg P/L ${learning.baselineAvgPnl.toFixed(2)} on {learning.settledCount}{" "}
+                settlement(s)
+              </p>
+              {learning.suggestions.length > 0 && (
+                <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                  {learning.suggestions.map((s) => (
+                    <li key={s}>{s}</li>
+                  ))}
+                </ul>
+              )}
+              {learning.buckets.length > 0 && (
+                <div className="overflow-x-auto rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Pattern</TableHead>
+                        <TableHead className="text-right">n</TableHead>
+                        <TableHead className="text-right">Win %</TableHead>
+                        <TableHead className="text-right">vs base</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {learning.buckets.slice(0, 6).map((b) => (
+                        <TableRow key={b.key}>
+                          <TableCell className="max-w-[200px] text-xs">{b.label}</TableCell>
+                          <TableCell className="text-right tabular-nums">{b.sampleSize}</TableCell>
+                          <TableCell className="text-right tabular-nums">{b.winRatePct}%</TableCell>
+                          <TableCell
+                            className={`text-right tabular-nums ${
+                              b.deltaWinRatePct > 0
+                                ? "text-green-600"
+                                : b.deltaWinRatePct < 0
+                                  ? "text-red-600"
+                                  : ""
+                            }`}
+                          >
+                            {b.deltaWinRatePct > 0 ? "+" : ""}
+                            {b.deltaWinRatePct}%
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-base">Is the self-improvement actually working?</CardTitle>
+            {evaluation && (
+              <Badge variant="outline" className={verdictConfig[evaluation.verdict].cls}>
+                {verdictConfig[evaluation.verdict].label}
+              </Badge>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Walk-forward test: each settled trade is predicted using only trades that settled{" "}
+            <em>before</em> it, then compared to reality. Brier score = prediction error (lower is
+            better); the learned model must beat your plain base win rate to add value.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {watchLoading && <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />}
+          {!watchLoading && evaluation && !evaluation.ready && (
+            <p className="text-muted-foreground">
+              {evaluation.notes[0] ??
+                `Need ≥ ${evaluation.minRequired} settled win/loss trades to measure accuracy.`}
+            </p>
+          )}
+          {!watchLoading && evaluation && evaluation.ready && (
+            <>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Actual win rate</p>
+                  <p className="text-xl font-bold">{evaluation.actualWinRatePct}%</p>
+                  <p className="text-xs text-muted-foreground">{evaluation.evaluated} scored</p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Predicted (learned)</p>
+                  <p className="text-xl font-bold">{evaluation.predictedWinRatePctLearned}%</p>
+                  <p className="text-xs text-muted-foreground">
+                    miss {Math.abs(evaluation.predictedWinRatePctLearned - evaluation.actualWinRatePct).toFixed(1)} pts
+                  </p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Brier (learned vs base-rate)</p>
+                  <p className="text-xl font-bold tabular-nums">
+                    {evaluation.brierLearned}{" "}
+                    <span className="text-sm font-normal text-muted-foreground">
+                      / {evaluation.brierBaseRate}
+                    </span>
+                  </p>
+                  <p
+                    className={`text-xs ${
+                      evaluation.brierImprovementVsBaseRate > 0
+                        ? "text-green-600"
+                        : evaluation.brierImprovementVsBaseRate < 0
+                          ? "text-red-600"
+                          : "text-muted-foreground"
+                    }`}
+                  >
+                    {evaluation.brierImprovementVsBaseRate > 0 ? "better by " : "worse by "}
+                    {Math.abs(evaluation.brierImprovementVsBaseRate)}
+                  </p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">Ranking (AUC)</p>
+                  <p className="text-xl font-bold tabular-nums">
+                    {evaluation.aucLearned ?? "—"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {evaluation.aucPop != null ? `POP ${evaluation.aucPop}` : "0.5 = coin flip"}
+                  </p>
+                </div>
+              </div>
+
+              {evaluation.notes.length > 0 && (
+                <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                  {evaluation.notes.map((n) => (
+                    <li key={n}>{n}</li>
+                  ))}
+                </ul>
+              )}
+
+              {evaluation.history.length >= 2 && (
+                <div>
+                  <p className="mb-1 text-xs font-medium text-muted-foreground">
+                    Accuracy as trades settle — predicted (learned) should converge toward actual win
+                    rate
+                  </p>
+                  <div className="h-56 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        data={evaluation.history}
+                        margin={{ top: 8, right: 12, bottom: 4, left: -8 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                        <XAxis
+                          dataKey="atSettled"
+                          tick={{ fontSize: 11 }}
+                          label={{ value: "settled trades", position: "insideBottom", offset: -2, fontSize: 10 }}
+                        />
+                        <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} unit="%" width={44} />
+                        <RechartsTooltip
+                          contentStyle={{ fontSize: 12 }}
+                          formatter={(v: number, name: string) => [`${v}%`, name]}
+                          labelFormatter={(l) => `After ${l} settled`}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        <Line
+                          type="monotone"
+                          dataKey="actualWinRatePct"
+                          name="Actual win rate"
+                          stroke="#16a34a"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="predictedWinRatePctLearned"
+                          name="Predicted (learned)"
+                          stroke="#2563eb"
+                          strokeWidth={2}
+                          strokeDasharray="5 3"
+                          dot={false}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Brier improvement now:{" "}
+                    <span
+                      className={
+                        evaluation.brierImprovementVsBaseRate > 0
+                          ? "text-green-600"
+                          : evaluation.brierImprovementVsBaseRate < 0
+                            ? "text-red-600"
+                            : ""
+                      }
+                    >
+                      {evaluation.brierImprovementVsBaseRate > 0 ? "+" : ""}
+                      {evaluation.brierImprovementVsBaseRate}
+                    </span>{" "}
+                    vs base-rate (positive = learning helps). Updates automatically each time a trade
+                    settles.
+                  </p>
+                </div>
+              )}
+
+              {evaluation.calibration.length > 0 && (
+                <div className="overflow-x-auto rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Predicted band</TableHead>
+                        <TableHead className="text-right">Avg predicted</TableHead>
+                        <TableHead className="text-right">Actual</TableHead>
+                        <TableHead className="text-right">n</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {evaluation.calibration.map((c) => (
+                        <TableRow key={c.bucket}>
+                          <TableCell className="text-xs">{c.bucket}</TableCell>
+                          <TableCell className="text-right tabular-nums">{c.predictedPct}%</TableCell>
+                          <TableCell className="text-right tabular-nums">{c.actualPct}%</TableCell>
+                          <TableCell className="text-right tabular-nums">{c.n}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

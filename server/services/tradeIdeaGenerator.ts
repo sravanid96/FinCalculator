@@ -439,6 +439,90 @@ function generateIronCondor(
   };
 }
 
+// Generate Cash Secured Put trade idea (sell a put, secured by cash to buy the stock)
+function generateCashSecuredPut(
+  chain: OptionsChain,
+  config: TradeIdeaConfig,
+  earnings: EarningsEvent | null,
+  rsi: number | null = null
+): TradeIdea | null {
+  const expiration = findTargetExpiration(chain.expirations, config.targetDTE);
+  if (!expiration) return null;
+
+  const shortPut = findOptionByDelta(expiration.puts, config.targetDelta, "put");
+  if (!shortPut) return null;
+
+  const premium = (shortPut.bid + shortPut.ask) / 2;
+  if (premium <= 0) return null;
+
+  const legs: TradeLeg[] = [
+    {
+      type: "put",
+      action: "sell",
+      strike: shortPut.strike,
+      expiration: expiration.expirationDate,
+      quantity: 1,
+      price: premium,
+      delta: shortPut.delta,
+    },
+  ];
+
+  const capitalRequired = shortPut.strike * 100;
+  const maxProfit = premium * 100;
+  // Worst case the stock goes to zero; loss is capital minus premium collected.
+  const maxLoss = capitalRequired - maxProfit;
+  const breakeven = [shortPut.strike - premium];
+
+  const pop = calculateProbabilityOfProfit("cash_secured_put", legs, breakeven);
+  const riskReward = calculateRiskReward(maxProfit, maxLoss);
+  const hasEarnings = hasEarningsWithinWindow(earnings, expiration.daysToExpiration);
+  const rsiAnalysis = calculateRSIConfidenceBoost(rsi, "cash_secured_put");
+
+  const returnOnCapital = (maxProfit / capitalRequired) * 100;
+  const notes: string[] = [
+    `Collect $${premium.toFixed(2)}/share ($${maxProfit.toFixed(0)}) premium`,
+    `${returnOnCapital.toFixed(1)}% return on $${capitalRequired.toFixed(0)} cash secured`,
+    `Assigned below $${breakeven[0].toFixed(2)} — willing buyer of the stock there`,
+  ];
+  if (rsiAnalysis && rsiAnalysis.zone !== "neutral") {
+    notes.unshift(`📊 ${rsiAnalysis.signal}`);
+  }
+  if (hasEarnings && earnings) {
+    notes.push(`⚠️ Earnings on ${earnings.reportDate} - consider closing before`);
+  }
+
+  // CSP is a high-POP income/acquisition play; risk/reward understates it because the
+  // "risk" is cash you'd spend buying stock you want. Let POP drive the recommendation.
+  const recommendation = getRecommendation(
+    pop,
+    Math.max(riskReward, 0.3),
+    hasEarnings,
+    rsiAnalysis,
+  );
+
+  return {
+    id: generateId(),
+    symbol: chain.symbol,
+    strategy: "cash_secured_put",
+    strategyName: STRATEGY_NAMES.cash_secured_put,
+    legs,
+    entryPrice: premium,
+    maxProfit,
+    maxLoss,
+    breakeven,
+    probabilityOfProfit: pop,
+    riskRewardRatio: riskReward,
+    daysToExpiration: expiration.daysToExpiration,
+    expirationDate: expiration.expirationDate,
+    underlyingPrice: chain.underlyingPrice,
+    hasEarningsRisk: hasEarnings,
+    earningsDate: earnings?.reportDate,
+    recommendation,
+    notes,
+    rsiAnalysis,
+  };
+}
+
 // Classify RSI into zones
 function classifyRSIZone(rsi: number | null): RSIZone {
   if (rsi === null) return "neutral";
@@ -557,15 +641,23 @@ export function generateTradeIdeas(
   const callSpread = generateCallCreditSpread(chain, config, earnings, rsi);
   if (callSpread) ideas.push(callSpread);
 
+  // Cash secured put — a single-leg income / stock-acquisition alternative.
+  const cashSecuredPut = generateCashSecuredPut(chain, config, earnings, rsi);
+  if (cashSecuredPut) ideas.push(cashSecuredPut);
+
+  // Iron condor is intentionally de-emphasized (two-sided, harder to manage). Kept as an
+  // option but sorted last so it never crowds out directional credit spreads / CSPs.
   const ironCondor = generateIronCondor(chain, config, earnings, rsi);
   if (ironCondor) ideas.push(ironCondor);
 
-  // Sort by recommendation quality, then by RSI confidence boost
+  // Sort by recommendation quality, then push iron condors down, then RSI confidence boost.
   const recommendationOrder = { strong_buy: 0, buy: 1, neutral: 2, avoid: 3 };
   ideas.sort((a, b) => {
     const recDiff = recommendationOrder[a.recommendation] - recommendationOrder[b.recommendation];
     if (recDiff !== 0) return recDiff;
-    // Secondary sort by RSI confidence boost (higher boost = better)
+    const aIC = a.strategy === "iron_condor" ? 1 : 0;
+    const bIC = b.strategy === "iron_condor" ? 1 : 0;
+    if (aIC !== bIC) return aIC - bIC;
     const aBoost = a.rsiAnalysis?.confidenceBoost ?? 0;
     const bBoost = b.rsiAnalysis?.confidenceBoost ?? 0;
     return bBoost - aBoost;

@@ -56,18 +56,27 @@ async function asyncPool<T, R>(
 }
 
 function pickBestCreditIdea(ideas: TradeIdea[]): TradeIdea | null {
-  const allowed = new Set(["put_credit_spread", "call_credit_spread", "iron_condor"]);
-  const filtered = ideas.filter((i) => allowed.has(i.strategy));
-  if (filtered.length === 0) return null;
-
-  const sorted = [...filtered];
-  sorted.sort((a, b) => {
+  // Prefer directional credit spreads and cash-secured puts. Iron condors are only used
+  // as a last resort (and capped at <2% of the final list downstream) — they were
+  // dominating selection because they tie on POP but win on credit/RR.
+  const preferred = new Set(["put_credit_spread", "call_credit_spread", "cash_secured_put"]);
+  const byPopThenRr = (a: TradeIdea, b: TradeIdea) => {
     if (b.probabilityOfProfit !== a.probabilityOfProfit) {
       return b.probabilityOfProfit - a.probabilityOfProfit;
     }
     return b.riskRewardRatio - a.riskRewardRatio;
-  });
-  return sorted[0];
+  };
+
+  const preferredIdeas = ideas.filter((i) => preferred.has(i.strategy));
+  if (preferredIdeas.length > 0) {
+    return [...preferredIdeas].sort(byPopThenRr)[0];
+  }
+
+  const ironCondors = ideas.filter((i) => i.strategy === "iron_condor");
+  if (ironCondors.length > 0) {
+    return [...ironCondors].sort(byPopThenRr)[0];
+  }
+  return null;
 }
 
 function computeIdeaLiquidityScore(chain: OptionsChain, idea: TradeIdea): number {
@@ -259,9 +268,22 @@ export async function fetchTopTradeIdeas(
     }
   });
 
-  const top = (rows.filter(Boolean) as TopOptionTradeIdea[])
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+  const ranked = (rows.filter(Boolean) as TopOptionTradeIdea[]).sort(
+    (a, b) => b.score - a.score,
+  );
+
+  // Cap iron condors at < 2% of the returned list (e.g. 0 for a 20-row list).
+  const maxIronCondors = Math.floor(limit * 0.02);
+  const top: TopOptionTradeIdea[] = [];
+  let ironCondorCount = 0;
+  for (const row of ranked) {
+    if (top.length >= limit) break;
+    if (row.idea.strategy === "iron_condor") {
+      if (ironCondorCount >= maxIronCondors) continue;
+      ironCondorCount++;
+    }
+    top.push(row);
+  }
 
   await Promise.all(
     top.map(async (row) => {

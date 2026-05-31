@@ -10,7 +10,12 @@ import {
   Info,
 } from "lucide-react";
 import { fetchApi } from "@/lib/queryClient";
-import type { BacktestTop20Response, BacktestSymbolResult } from "@shared/optionsSchema";
+import type {
+  BacktestTop20Response,
+  BacktestSymbolResult,
+  WatchlistLearningReport,
+} from "@shared/optionsSchema";
+import { findLearningBucket } from "@shared/watchlistLearning";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -159,6 +164,25 @@ export function BacktestTab({
     staleTime: 60 * 60 * 1000,
     retry: 0,
   });
+
+  const { data: learningReport } = useQuery<WatchlistLearningReport>({
+    queryKey: ["/api/options/watchlist/learning"],
+    queryFn: async () => {
+      const res = await fetchApi("/api/options/watchlist/learning");
+      if (!res.ok) throw new Error("Failed to load learning report");
+      return res.json() as Promise<WatchlistLearningReport>;
+    },
+    staleTime: 5 * 60 * 1000,
+    retry: 0,
+  });
+
+  // The user's own settled outcomes for the selected strategy — the real-world reality
+  // check on the simulated backtest (which warns of a 15–30% haircut vs live fills).
+  const liveStrategyBucket = useMemo(
+    () =>
+      learningReport ? findLearningBucket(learningReport, `strategy:${strategy}`) : undefined,
+    [learningReport, strategy],
+  );
 
   const [sortKey, setSortKey] = useState<
     "sharpe" | "winRate" | "totalPnl" | "profitFactor" | "avgPnl"
@@ -347,6 +371,59 @@ export function BacktestTab({
               </div>
             </CardContent>
           </Card>
+
+          {/* Your live results vs backtest (reality check) */}
+          {learningReport && learningReport.readiness !== "not_enough_data" && (
+            <Card className="border-blue-300/50 bg-blue-50/30 dark:bg-blue-900/10">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">
+                  Your settled results vs backtest ({STRATEGY_OPTIONS.find((s) => s.value === strategy)?.label})
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {liveStrategyBucket ? (
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <StatBlock
+                      label="Backtest win rate"
+                      value={`${data.summary.aggregateWinRate.toFixed(1)}%`}
+                      hint="simulated"
+                    />
+                    <StatBlock
+                      label="Your settled win rate"
+                      value={`${liveStrategyBucket.winRatePct}%`}
+                      hint={`${liveStrategyBucket.sampleSize} settled`}
+                      tone={
+                        liveStrategyBucket.winRatePct >= data.summary.aggregateWinRate
+                          ? "good"
+                          : "bad"
+                      }
+                    />
+                    <StatBlock
+                      label="Live vs sim"
+                      value={fmtPct(liveStrategyBucket.winRatePct - data.summary.aggregateWinRate)}
+                      hint="real-world gap"
+                      tone={
+                        liveStrategyBucket.winRatePct - data.summary.aggregateWinRate >= -10
+                          ? "neutral"
+                          : "bad"
+                      }
+                    />
+                    <StatBlock
+                      label="Your avg P/L"
+                      value={fmtUsd(liveStrategyBucket.avgPnl)}
+                      tone={liveStrategyBucket.avgPnl > 0 ? "good" : "bad"}
+                    />
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No settled {STRATEGY_OPTIONS.find((s) => s.value === strategy)?.label} trades yet
+                    (need ≥ 3). Save ideas of this type to your watchlist and let them settle to
+                    compare your real fills against this simulation.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {/* Best / Worst */}
           <div className="grid gap-4 lg:grid-cols-2">

@@ -13,10 +13,16 @@ import {
   Filter,
 } from "lucide-react";
 import { addIdeaToWatchlist } from "@/components/options/IdeaWatchlistTab";
+import { buildWatchlistContext } from "@/lib/watchlistContext";
 import { fetchApi } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import type { TopOptionTradeIdea, BacktestSymbolResult } from "@shared/optionsSchema";
+import type {
+  TopOptionTradeIdea,
+  BacktestSymbolResult,
+  WatchlistLearningReport,
+} from "@shared/optionsSchema";
 import { STRATEGY_NAMES } from "@shared/optionsSchema";
+import { applyWatchlistLearningBoost, learnedSignalForIdea } from "@shared/watchlistLearning";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -74,21 +80,6 @@ export function TopTradeIdeasTab({
   const queryClient = useQueryClient();
   const [filterByEdge, setFilterByEdge] = useState(true);
   const [hideNegativeEdge, setHideNegativeEdge] = useState(true);
-
-  const addWatchMut = useMutation({
-    mutationFn: async (row: TopOptionTradeIdea) => addIdeaToWatchlist(row.symbol, row.idea),
-    onSuccess: () => {
-      toast({ title: "Added to watchlist" });
-      queryClient.invalidateQueries({ queryKey: ["/api/options/watchlist"] });
-    },
-    onError: (e: Error) => {
-      toast({
-        title: "Could not add",
-        description: e.message,
-        variant: "destructive",
-      });
-    },
-  });
 
   const { data, isLoading, error, refetch, isFetching } = useQuery<TopOptionTradeIdea[]>({
     queryKey: ["/api/options/top-ideas", 20],
@@ -156,41 +147,89 @@ export function TopTradeIdeasTab({
     return map;
   }, [backtestData]);
 
-  // Sort/filter data based on backtest results
+  // The user's own settled-outcome learning (authenticated). Used to nudge ranking
+  // toward setups that have actually worked for them, on top of global backtest edge.
+  const { data: learningReport } = useQuery<WatchlistLearningReport>({
+    queryKey: ["/api/options/watchlist/learning"],
+    queryFn: async () => {
+      const res = await fetchApi("/api/options/watchlist/learning");
+      if (!res.ok) throw new Error("Failed to load learning report");
+      return res.json() as Promise<WatchlistLearningReport>;
+    },
+    staleTime: 5 * 60 * 1000,
+    retry: 0,
+  });
+
+  const addWatchMut = useMutation({
+    mutationFn: async (row: TopOptionTradeIdea) => {
+      const backtest = backtestMap.get(row.symbol.toUpperCase());
+      return addIdeaToWatchlist(
+        row.symbol,
+        row.idea,
+        buildWatchlistContext({
+          idea: row.idea,
+          backtest,
+          quote: {
+            symbol: row.symbol,
+            name: row.name,
+            price: row.price,
+            change: 0,
+            changePercent: row.changePercent,
+            volume: row.volume,
+          },
+        }),
+      );
+    },
+    onSuccess: () => {
+      toast({ title: "Added to watchlist" });
+      queryClient.invalidateQueries({ queryKey: ["/api/options/watchlist"] });
+    },
+    onError: (e: Error) => {
+      toast({
+        title: "Could not add",
+        description: e.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Blended score = base idea score (POP/liquidity/RR/DTE) adjusted by the user's own
+  // settled-outcome multiplier. This reorders toward setups that have worked for them;
+  // it does NOT claim higher predictive accuracy — it's decision prioritization.
+  const blendedScoreFor = useMemo(() => {
+    return (row: TopOptionTradeIdea): number => {
+      if (!learningReport) return row.score;
+      const backtest = backtestMap.get(row.symbol.toUpperCase());
+      const ctx = buildWatchlistContext({ idea: row.idea, backtest });
+      return applyWatchlistLearningBoost(row.score, ctx, learningReport);
+    };
+  }, [learningReport, backtestMap]);
+
+  // Sort/filter data based on backtest edge + base score + learned multiplier.
   const processedData = useMemo(() => {
     if (!ideasList.length) return [];
 
-    // First, filter out only the explicitly bad ones if that toggle is on
     let filtered = ideasList.filter((row) => {
       const backtest = backtestMap.get(row.symbol.toUpperCase());
-      // Only hide if we have data showing it's a historical loser
       if (hideNegativeEdge && backtest?.historicalEdge === "negative") return false;
       return true;
     });
 
-    // Then, sort by edge quality if prioritization is on
-    if (filterByEdge) {
-      filtered = [...filtered].sort((a, b) => {
+    const edgeOrder: Record<string, number> = { strong: 0, positive: 1, flat: 2, negative: 3 };
+    filtered = [...filtered].sort((a, b) => {
+      if (filterByEdge) {
         const backtestA = backtestMap.get(a.symbol.toUpperCase());
         const backtestB = backtestMap.get(b.symbol.toUpperCase());
-
-        const edgeOrder: Record<string, number> = { strong: 0, positive: 1, flat: 2, negative: 3 };
         const edgeA = backtestA?.historicalEdge != null ? (edgeOrder[backtestA.historicalEdge] ?? 4) : 4;
         const edgeB = backtestB?.historicalEdge != null ? (edgeOrder[backtestB.historicalEdge] ?? 4) : 4;
-
-        // If edges are equal, sort by tradeability score
-        if (edgeA === edgeB) {
-          const scoreA = calculateTradeabilityScore(backtestA) || 0;
-          const scoreB = calculateTradeabilityScore(backtestB) || 0;
-          return scoreB - scoreA;
-        }
-
-        return edgeA - edgeB;
-      });
-    }
+        if (edgeA !== edgeB) return edgeA - edgeB;
+      }
+      // Within the same edge tier (or when edge filtering is off), rank by blended score.
+      return blendedScoreFor(b) - blendedScoreFor(a);
+    });
 
     return filtered;
-  }, [ideasList, backtestMap, filterByEdge, hideNegativeEdge]);
+  }, [ideasList, backtestMap, filterByEdge, hideNegativeEdge, blendedScoreFor]);
 
   const updatedAt = useMemo(() => {
     const ts = ideasList[0]?.updatedAt;
@@ -226,6 +265,14 @@ export function TopTradeIdeasTab({
             Ranked from Yahoo Finance "most actives", then filtered to defined-risk credit trades with POP ≥ 60%
             and decent options liquidity. <strong>Historical edge filtering</strong> prioritizes symbols with proven
             backtest performance.
+            {learningReport && learningReport.readiness !== "not_enough_data" && (
+              <>
+                {" "}
+                <strong>Score is personalized</strong> from your {learningReport.settledCount} settled
+                outcomes ({learningReport.baselineWinRatePct}% baseline) — green/red means your history
+                nudged it up/down. Not a prediction.
+              </>
+            )}
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-4 rounded-lg bg-muted p-3">
             <div className="flex items-center gap-2">
@@ -329,6 +376,13 @@ export function TopTradeIdeasTab({
                     const expectedValue = calculateExpectedValue(backtest);
                     const tradeabilityScore = calculateTradeabilityScore(backtest);
                     const positionSize = getPositionSize(backtest);
+                    const ctx = buildWatchlistContext({ idea, backtest });
+                    const blendedScore = learningReport
+                      ? applyWatchlistLearningBoost(row.score, ctx, learningReport)
+                      : row.score;
+                    const learned = learningReport
+                      ? learnedSignalForIdea(ctx, learningReport, idea.recommendation)
+                      : undefined;
 
                     return (
                       <TableRow key={`${row.symbol}-${idea.id}`}>
@@ -477,7 +531,33 @@ export function TopTradeIdeasTab({
                           </div>
                         </TableCell>
                         <TableCell className="text-right">
-                          <span className="font-semibold">{row.score}</span>
+                          {learned && learned.direction !== "neutral" ? (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <div className="flex cursor-help flex-col items-end">
+                                    <span
+                                      className={`font-semibold ${
+                                        learned.direction === "favor"
+                                          ? "text-emerald-600"
+                                          : "text-red-600"
+                                      }`}
+                                    >
+                                      {blendedScore}
+                                    </span>
+                                    <span className="text-[10px] text-muted-foreground line-through">
+                                      {row.score}
+                                    </span>
+                                  </div>
+                                </TooltipTrigger>
+                                <TooltipContent side="left" className="max-w-xs">
+                                  <p className="text-xs">{learned.note}</p>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          ) : (
+                            <span className="font-semibold">{row.score}</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-right">{idea.probabilityOfProfit.toFixed(0)}%</TableCell>
                         <TableCell className="text-right">${credit.toFixed(0)}</TableCell>
