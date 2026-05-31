@@ -1,0 +1,8 @@
+alpaca-py>=0.30.0
+yfinance>=0.2.40
+pandas>=2.0
+numpy>=1.24
+python-dotenv>=1.0
+# pick ONE LLM client (uncomment what you use)
+openai>=1.30
+# anthropic>=0.34
